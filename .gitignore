@@ -31,3 +31,7 @@ build/
 
 ### VS Code ###
 .vscode/
+/volume/cache/server.test.pem.crt
+/volume/cache/machine.json
+/volume/cache/server.test.pem
+/volume/cache/server.test.pem.key

@@ -13,18 +13,75 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
     depends_on:
       - zookeeper
+    volumes:
+      - ./init-kafka.sh:/init-kafka.sh
+    command: >
+      bash -c "/etc/confluent/docker/run &
+               sleep 10 &&
+               bash /init-kafka.sh &&
+               wait"
+
+  ticket-sales-processor:
+    build: ./ticket-sales-processor
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      AWS_ENDPOINT: http://localstack:4566
+      AWS_REGION: us-east-1
+    depends_on:
+      - kafka
+      - localstack
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+  payment-processor-fake:
+    build: ./payment-processor-fake
+    environment:
+      KAFKA_BROKER: kafka:9092
+      REQUEST_TOPIC: payment-request
+      RESPONSE_TOPIC: payment-response
+    depends_on:
+      - kafka
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 64M
+        reservations:
+          cpus: "0.10"
+          memory: 32M
+
+  load-tester:
+    build: ./load-tester
+    ports:
+      - "8081:8081"
+    environment:
+      AWS_ENDPOINT: http://localstack:4566
+      AWS_REGION: us-east-1
+      QUEUE_NAME: ticket-sales-queue
+      PORT: "8081"
+    depends_on:
+      localstack:
+        condition: service_healthy
 
   localstack:
-    container_name: localstack_main
+    container_name: localstack_bucket4j
     image: localstack/localstack
     ports:
       - "127.0.0.1:4566:4566"
     environment:
-      - SERVICES=dynamodb
+      - SERVICES=sqs,dynamodb
       - DEBUG=1
       - AWS_DEFAULT_REGION=us-east-1
       - AWS_ACCESS_KEY_ID=test
@@ -33,3 +90,8 @@ services:
       - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
       - "/var/run/docker.sock:/var/run/docker.sock"
       - "./init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
