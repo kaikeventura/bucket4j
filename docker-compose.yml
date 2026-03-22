@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  localstack:
+    container_name: localstack_main
+    image: localstack/localstack
+    ports:
+      - "127.0.0.1:4510-4559:4510-4559" # External services port range
+      - "127.0.0.1:4566:4566"           # Default LocalStack port
+      - "127.0.0.1:4571:4571"           # S3 edge port
+    environment:
+      - SERVICES=sqs,sns,dynamodb
+      - DEBUG=1
+      - DATA_DIR=/tmp/localstack/data
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+    volumes:
+      - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
