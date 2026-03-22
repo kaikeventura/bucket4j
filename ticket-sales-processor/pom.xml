@@ -85,11 +85,6 @@
             <artifactId>opentelemetry-exporter-otlp</artifactId>
             <version>${otel.version}</version>
         </dependency>
-        <dependency>
-            <groupId>io.opentelemetry.instrumentation</groupId>
-            <artifactId>opentelemetry-spring-boot-starter</artifactId>
-            <version>${otel.instrumentation.version}</version>
-        </dependency>
     </dependencies>
 
     <build>

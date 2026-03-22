@@ -3,9 +3,9 @@ package com.example.ticketsales.listener;
 import com.example.ticketsales.model.PaymentResponse;
 import com.example.ticketsales.repository.PaymentRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
-import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -18,12 +18,11 @@ import org.springframework.stereotype.Component;
 public class PaymentResponseListener {
 
     private final PaymentRepository paymentRepository;
-    private final Tracer tracer;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @KafkaListener(topics = "${kafka.topics.payment-response}", groupId = "${spring.kafka.consumer.group-id}")
     public void consume(String message) {
-        Span span = tracer.spanBuilder("kafka.consume_payment_response").startSpan();
+        Span span = GlobalOpenTelemetry.getTracer("com.example.ticketsales").spanBuilder("kafka.consume_payment_response").startSpan();
         try (Scope ignored = span.makeCurrent()) {
             PaymentResponse response = objectMapper.readValue(message, PaymentResponse.class);
             span.setAttribute("ticket.id", response.getTicketId());

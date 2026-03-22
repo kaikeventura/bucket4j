@@ -5,6 +5,7 @@ import com.example.ticketsales.model.PaymentRequest;
 import com.example.ticketsales.model.TicketSaleMessage;
 import com.example.ticketsales.repository.PaymentRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.DoubleHistogram;
@@ -35,9 +36,6 @@ public class SqsMessageListener {
     private final SqsClient sqsClient;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final PaymentRepository paymentRepository;
-    private final Tracer tracer;
-    private final LongCounter ticketsProcessedCounter;
-    private final DoubleHistogram processingDurationHistogram;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${aws.sqs.queue-name}")
@@ -70,7 +68,7 @@ public class SqsMessageListener {
     }
 
     private void process(String body) throws Exception {
-        Span span = tracer.spanBuilder("sqs.process_ticket").startSpan();
+        Span span = GlobalOpenTelemetry.getTracer("com.example.ticketsales").spanBuilder("sqs.process_ticket").startSpan();
         long start = System.nanoTime();
         String status = "SUCCESS";
 
@@ -110,8 +108,16 @@ public class SqsMessageListener {
             Attributes attrs = Attributes.of(
                     AttributeKey.stringKey("status"), status
             );
-            ticketsProcessedCounter.add(1, attrs);
-            processingDurationHistogram.record(durationSeconds, attrs);
+            GlobalOpenTelemetry.getMeter("com.example.ticketsales").counterBuilder("ticketsProcessedCounter")
+                    .setDescription("Total number of tickets processed")
+                    .setUnit("1")
+                    .build()
+                    .add(1, attrs);
+            GlobalOpenTelemetry.getMeter("com.example.ticketsales").histogramBuilder("processingDurationHistogram")
+                    .setDescription("Histogram of processing duration")
+                    .setUnit("seconds")
+                    .build()
+                    .record(durationSeconds, attrs);
             span.end();
         }
     }

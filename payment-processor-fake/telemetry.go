@@ -14,8 +14,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 func setupOtel(ctx context.Context) (shutdown func(context.Context) error, err error) {
@@ -24,18 +22,12 @@ func setupOtel(ctx context.Context) (shutdown func(context.Context) error, err e
 		endpoint = "otel-collector:4317"
 	}
 
-	//nolint:staticcheck
-	conn, err := grpc.Dial(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, fmt.Errorf("grpc dial: %w", err)
-	}
-
 	res, err := resource.New(ctx, resource.WithAttributes(semconv.ServiceName("payment-processor-fake")))
 	if err != nil {
 		return nil, fmt.Errorf("otel resource: %w", err)
 	}
 
-	traceExp, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(conn))
+	traceExp, err := otlptracegrpc.New(ctx, otlptracegrpc.WithEndpoint("otel-collector:4317"))
 	if err != nil {
 		return nil, fmt.Errorf("trace exporter: %w", err)
 	}
@@ -44,7 +36,7 @@ func setupOtel(ctx context.Context) (shutdown func(context.Context) error, err e
 		sdktrace.WithResource(res),
 	)
 
-	metricExp, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithGRPCConn(conn))
+	metricExp, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithEndpoint("otel-collector:4317"))
 	if err != nil {
 		return nil, fmt.Errorf("metric exporter: %w", err)
 	}
@@ -67,6 +59,6 @@ func setupOtel(ctx context.Context) (shutdown func(context.Context) error, err e
 		if err := mp.Shutdown(ctx); err != nil {
 			return err
 		}
-		return conn.Close()
+		return nil
 	}, nil
 }
