@@ -84,7 +84,7 @@ func main() {
 			continue
 		}
 
-		_, span := tracer.Start(ctx, "kafka.process_payment")
+		ctx, span := tracer.Start(ctx, "kafka.process_payment")
 		start := time.Now()
 		statusVal := "SUCCESS"
 
@@ -115,9 +115,8 @@ func main() {
 			}
 		}
 
-		attrs := metric.WithAttributes(attribute.String("status", statusVal))
-		counter.Add(ctx, 1, attrs)
-		histogram.Record(ctx, time.Since(start).Seconds(), attrs)
+		counter.Add(ctx, 1, metric.WithAttributes(attribute.String("status", statusVal)))
+		histogram.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(attribute.String("status", statusVal)))
 		span.End()
 	}
 }

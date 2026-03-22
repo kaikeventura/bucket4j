@@ -5,6 +5,8 @@ import com.example.ticketsales.model.PaymentRequest;
 import com.example.ticketsales.model.TicketSaleMessage;
 import com.example.ticketsales.repository.PaymentRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.DoubleHistogram;
 import io.opentelemetry.api.metrics.LongCounter;
 import io.opentelemetry.api.trace.Span;
@@ -46,24 +48,28 @@ public class SqsMessageListener {
 
     @Scheduled(fixedDelay = 2000)
     public void poll() {
-        String queueUrl = sqsClient.getQueueUrl(r -> r.queueName(queueName)).queueUrl();
-        List<Message> messages = sqsClient.receiveMessage(
-                ReceiveMessageRequest.builder().queueUrl(queueUrl).maxNumberOfMessages(10).build()
-        ).messages();
+        try {
+            String queueUrl = sqsClient.getQueueUrl(r -> r.queueName(queueName)).queueUrl();
+            List<Message> messages = sqsClient.receiveMessage(
+                    ReceiveMessageRequest.builder().queueUrl(queueUrl).maxNumberOfMessages(10).build()
+            ).messages();
 
-        for (Message msg : messages) {
-            try {
-                process(msg.body());
-            } catch (Exception e) {
-                log.error("Failed to process message: {}", msg.body(), e);
-            } finally {
-                sqsClient.deleteMessage(DeleteMessageRequest.builder()
-                        .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
+            for (Message msg : messages) {
+                try {
+                    process(msg.body());
+                } catch (Exception e) {
+                    log.error("Failed to process message: {}", msg.body(), e);
+                } finally {
+                    sqsClient.deleteMessage(DeleteMessageRequest.builder()
+                            .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
+                }
             }
+        } catch (Exception e) {
+            log.error("Error polling SQS: {}", e.getMessage());
         }
     }
 
-    void process(String body) throws Exception {
+    private void process(String body) throws Exception {
         Span span = tracer.spanBuilder("sqs.process_ticket").startSpan();
         long start = System.nanoTime();
         String status = "SUCCESS";
@@ -74,9 +80,11 @@ public class SqsMessageListener {
             span.setAttribute("ticket.amount", ticketMsg.getAmount());
             log.info("Received from SQS: {}", ticketMsg);
 
-            PaymentRequest request = new PaymentRequest(
-                    ticketMsg.getTicketId(), ticketMsg.getAmount(),
-                    ticketMsg.getCurrency(), ticketMsg.getUserId());
+            PaymentRequest request = new PaymentRequest();
+            request.setTicketId(ticketMsg.getTicketId());
+            request.setAmount(ticketMsg.getAmount());
+            request.setCurrency(ticketMsg.getCurrency());
+            request.setUserId(ticketMsg.getUserId());
 
             kafkaTemplate.send(paymentRequestTopic, objectMapper.writeValueAsString(request));
             log.info("Published PaymentRequest to Kafka: {}", request);
@@ -99,8 +107,8 @@ public class SqsMessageListener {
             throw e;
         } finally {
             double durationSeconds = (System.nanoTime() - start) / 1e9;
-            var attrs = io.opentelemetry.api.common.Attributes.of(
-                    io.opentelemetry.api.common.AttributeKey.stringKey("status"), status
+            Attributes attrs = Attributes.of(
+                    AttributeKey.stringKey("status"), status
             );
             ticketsProcessedCounter.add(1, attrs);
             processingDurationHistogram.record(durationSeconds, attrs);

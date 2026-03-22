@@ -22,7 +22,7 @@ public class PaymentResponseListener {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @KafkaListener(topics = "${kafka.topics.payment-response}", groupId = "${spring.kafka.consumer.group-id}")
-    public void consume(String message) throws Exception {
+    public void consume(String message) {
         Span span = tracer.spanBuilder("kafka.consume_payment_response").startSpan();
         try (Scope ignored = span.makeCurrent()) {
             PaymentResponse response = objectMapper.readValue(message, PaymentResponse.class);
@@ -37,7 +37,7 @@ public class PaymentResponseListener {
         } catch (Exception e) {
             span.setStatus(StatusCode.ERROR, e.getMessage());
             span.recordException(e);
-            throw e;
+            log.error("Error processing payment response", e);
         } finally {
             span.end();
         }
