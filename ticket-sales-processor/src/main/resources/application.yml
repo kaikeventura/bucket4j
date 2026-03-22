@@ -24,3 +24,16 @@ kafka:
   topics:
     payment-request: payment-request
     payment-response: payment-response
+
+otel:
+  exporter:
+    otlp:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://otel-collector:4318}
+  service:
+    name: ticket-sales-processor
+  traces:
+    exporter: otlp
+  metrics:
+    exporter: otlp
+  logs:
+    exporter: otlp

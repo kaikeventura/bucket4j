@@ -3,6 +3,10 @@ package com.example.ticketsales.listener;
 import com.example.ticketsales.model.PaymentResponse;
 import com.example.ticketsales.repository.PaymentRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -14,14 +18,28 @@ import org.springframework.stereotype.Component;
 public class PaymentResponseListener {
 
     private final PaymentRepository paymentRepository;
+    private final Tracer tracer;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @KafkaListener(topics = "${kafka.topics.payment-response}", groupId = "${spring.kafka.consumer.group-id}")
     public void consume(String message) throws Exception {
-        PaymentResponse response = objectMapper.readValue(message, PaymentResponse.class);
-        log.info("Received PaymentResponse: {}", response);
+        Span span = tracer.spanBuilder("kafka.consume_payment_response").startSpan();
+        try (Scope ignored = span.makeCurrent()) {
+            PaymentResponse response = objectMapper.readValue(message, PaymentResponse.class);
+            span.setAttribute("ticket.id", response.getTicketId());
+            span.setAttribute("payment.status", response.getStatus());
+            log.info("Received PaymentResponse: {}", response);
 
-        paymentRepository.updateStatus(response.getTicketId(), response.getStatus(), response.getTransactionId());
-        log.info("Updated status={} for ticketId={}", response.getStatus(), response.getTicketId());
+            paymentRepository.updateStatus(response.getTicketId(), response.getStatus(), response.getTransactionId());
+            log.info("Updated status={} for ticketId={}", response.getStatus(), response.getTicketId());
+
+            span.setStatus(StatusCode.OK);
+        } catch (Exception e) {
+            span.setStatus(StatusCode.ERROR, e.getMessage());
+            span.recordException(e);
+            throw e;
+        } finally {
+            span.end();
+        }
     }
 }

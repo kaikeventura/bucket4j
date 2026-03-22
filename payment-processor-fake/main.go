@@ -10,6 +10,10 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 )
 
 func getEnv(key, fallback string) string {
@@ -29,6 +33,31 @@ func simulatePayment(req PaymentRequest) PaymentResponse {
 }
 
 func main() {
+	ctx := context.Background()
+
+	shutdown, err := setupOtel(ctx)
+	if err != nil {
+		log.Fatalf("otel setup: %v", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdown(shutdownCtx); err != nil {
+			log.Printf("otel shutdown: %v", err)
+		}
+	}()
+
+	tracer := otel.Tracer("payment-processor-fake")
+	meter := otel.Meter("payment-processor-fake")
+
+	counter, _ := meter.Int64Counter("bucket4j.tickets.processed",
+		metric.WithDescription("Total payments processed by fake processor"),
+	)
+	histogram, _ := meter.Float64Histogram("bucket4j.processing.duration",
+		metric.WithDescription("Payment processing duration"),
+		metric.WithUnit("s"),
+	)
+
 	broker := getEnv("KAFKA_BROKER", "localhost:9092")
 	requestTopic := getEnv("REQUEST_TOPIC", "payment-request")
 	responseTopic := getEnv("RESPONSE_TOPIC", "payment-response")
@@ -49,24 +78,46 @@ func main() {
 	log.Printf("Consuming from topic: %s", requestTopic)
 
 	for {
-		msg, err := reader.ReadMessage(context.Background())
+		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
 			log.Printf("read error: %v", err)
 			continue
 		}
 
+		_, span := tracer.Start(ctx, "kafka.process_payment")
+		start := time.Now()
+		statusVal := "SUCCESS"
+
 		var req PaymentRequest
 		if err := json.Unmarshal(msg.Value, &req); err != nil {
 			log.Printf("parse error: %v — value: %s", err, string(msg.Value))
-			continue
+			span.SetStatus(codes.Error, err.Error())
+			span.RecordError(err)
+			statusVal = "FAILED"
+		} else {
+			span.SetAttributes(
+				attribute.String("ticket.id", req.TicketId),
+				attribute.Float64("ticket.amount", req.Amount),
+			)
+
+			resp := simulatePayment(req)
+			statusVal = resp.Status
+			log.Printf("Processed ticketId=%s → status=%s txn=%s", resp.TicketId, resp.Status, resp.TransactionId)
+
+			respJSON, _ := json.Marshal(resp)
+			if err := writer.WriteMessages(ctx, kafka.Message{Value: respJSON}); err != nil {
+				log.Printf("publish error: %v", err)
+				span.SetStatus(codes.Error, err.Error())
+				span.RecordError(err)
+				statusVal = "FAILED"
+			} else {
+				span.SetStatus(codes.Ok, "")
+			}
 		}
 
-		resp := simulatePayment(req)
-		log.Printf("Processed ticketId=%s → status=%s txn=%s", resp.TicketId, resp.Status, resp.TransactionId)
-
-		respJSON, _ := json.Marshal(resp)
-		if err := writer.WriteMessages(context.Background(), kafka.Message{Value: respJSON}); err != nil {
-			log.Printf("publish error: %v", err)
-		}
+		attrs := metric.WithAttributes(attribute.String("status", statusVal))
+		counter.Add(ctx, 1, attrs)
+		histogram.Record(ctx, time.Since(start).Seconds(), attrs)
+		span.End()
 	}
 }
