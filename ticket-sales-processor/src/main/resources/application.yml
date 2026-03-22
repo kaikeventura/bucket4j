@@ -1,0 +1,26 @@
+aws:
+  endpoint: http://localhost:4566
+  region: us-east-1
+  sqs:
+    queue-name: ticket-sales-queue
+  dynamodb:
+    table-name: payments
+
+spring:
+  application:
+    name: ticket-sales-processor
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: ticket-sales-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+kafka:
+  topics:
+    payment-request: payment-request
+    payment-response: payment-response
