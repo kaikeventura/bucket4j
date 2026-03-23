@@ -78,11 +78,11 @@ services:
       replicas: 3
       resources:
         limits:
-          cpus: "0.25"
-          memory: 32M
-        reservations:
           cpus: "0.10"
           memory: 16M
+        reservations:
+          cpus: "0.05"
+          memory: 8M
 
   load-tester:
     build: ./load-tester
