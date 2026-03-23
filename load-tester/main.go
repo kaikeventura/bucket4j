@@ -102,7 +102,7 @@ func main() {
 			return
 		}
 
-		workers := 50
+		workers := 100
 		if wStr := query.Get("workers"); wStr != "" {
 			if w, err := strconv.Atoi(wStr); err == nil && w > 0 {
 				workers = w
