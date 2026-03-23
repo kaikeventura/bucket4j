@@ -86,9 +86,11 @@ func main() {
 	})
 	defer reader.Close()
 
+	// Configura o writer com BatchTimeout menor para evitar latência de 1s
 	writer := kafka.NewWriter(kafka.WriterConfig{
-		Brokers: []string{broker},
-		Topic:   responseTopic,
+		Brokers:      []string{broker},
+		Topic:        responseTopic,
+		BatchTimeout: 10 * time.Millisecond,
 	})
 	defer writer.Close()
 
