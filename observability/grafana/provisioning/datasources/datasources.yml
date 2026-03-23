@@ -12,15 +12,20 @@ datasources:
     type: tempo
     uid: tempo
     url: http://tempo:3200
+    access: proxy
+    basicAuth: false
     editable: true
     jsonData:
+      httpMethod: GET
       tracesToLogsV2:
         datasourceUid: loki
-        spanStartTimeShift: "-1m"
-        spanEndTimeShift: "1m"
-        filterByTraceID: true
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        tags: ["job", "service"]
+        filterByTraceID: false
+        filterBySpanID: false
         customQuery: true
-        query: '{service=~".+"} | json | trace_id="${__trace.traceId}"'
+        query: '{service_name="$${__service.name}"} | json | trace_id="$${__trace.traceId}"'
       nodeGraph:
         enabled: true
 
@@ -28,11 +33,12 @@ datasources:
     type: loki
     uid: loki
     url: http://loki:3100
+    access: proxy
+    basicAuth: false
     editable: true
     jsonData:
       derivedFields:
-        - name: trace_id
-          matcherRegex: '"trace_id":"(\w+)"'
+        - datasourceUid: tempo
+          matcherRegex: "trace_id=(\\w+)"
+          name: TraceID
           url: "$${__value.raw}"
-          datasourceUid: tempo
-          urlDisplayLabel: "View Trace"

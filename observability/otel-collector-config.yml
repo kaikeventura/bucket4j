@@ -11,12 +11,16 @@ processors:
     timeout: 5s
     send_batch_size: 512
 
-  # Promove service.name como label de stream no Loki
-  resource/loki_labels:
+  # Cria o atributo service_name a partir de service.name (padrão OTEL)
+  # e define que esse atributo deve ser promovido a label no Loki
+  resource:
     attributes:
       - action: insert
-        key: loki.resource.labels
+        key: service_name
         from_attribute: service.name
+      - action: insert
+        key: loki.resource.labels
+        value: service_name
 
 exporters:
   otlp/tempo:
@@ -50,5 +54,5 @@ service:
 
     logs:
       receivers: [otlp]
-      processors: [batch, resource/loki_labels]
+      processors: [batch, resource]
       exporters: [loki]

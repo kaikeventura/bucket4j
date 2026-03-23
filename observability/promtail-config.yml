@@ -15,11 +15,11 @@ scrape_configs:
         refresh_interval: 5s
         filters:
           - name: label
-            values: ["com.docker.compose.project"]
+            values: ["com.docker.compose.project=bucket4j"] # Filtra pelo projeto correto
 
     relabel_configs:
       - source_labels: [__meta_docker_container_label_com_docker_compose_service]
-        target_label: service
+        target_label: service_name # Padroniza para service_name
       - source_labels: [__meta_docker_container_label_com_docker_compose_project]
         target_label: project
       - source_labels: [__meta_docker_container_name]
@@ -29,7 +29,7 @@ scrape_configs:
         target_label: stream
 
     pipeline_stages:
-      # Extrai campos do JSON (Java usa logback JSON, Go usa log padrão)
+      # Extrai campos do JSON (Java usa logback JSON, Go usa log padrão, mas se for JSON ajuda)
       - json:
           expressions:
             level: level
