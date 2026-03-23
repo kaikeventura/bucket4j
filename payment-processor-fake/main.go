@@ -13,7 +13,9 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/metric"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 func getEnv(key, fallback string) string {
@@ -30,6 +32,20 @@ func simulatePayment(req PaymentRequest) PaymentResponse {
 		Status:        statuses[rand.Intn(len(statuses))],
 		TransactionId: fmt.Sprintf("TXN-%d", time.Now().UnixNano()),
 	}
+}
+
+// simple helper to emit structured log to OTel
+func emitLog(logger otellog.Logger, severity otellog.Severity, body string, attrs ...otellog.KeyValue) {
+	ctx := context.Background()
+	r := otellog.Record{}
+	r.SetTimestamp(time.Now())
+	r.SetSeverity(severity)
+	r.SetSeverityText(severity.String())
+	r.SetBody(otellog.StringValue(body))
+	r.AddAttributes(attrs...)
+	logger.Emit(ctx, r)
+
+	log.Printf("%s: %s", severity.String(), body)
 }
 
 func main() {
@@ -49,6 +65,7 @@ func main() {
 
 	tracer := otel.Tracer("payment-processor-fake")
 	meter := otel.Meter("payment-processor-fake")
+	logger := global.Logger("payment-processor-fake")
 
 	counter, _ := meter.Int64Counter("bucket4j.tickets.processed",
 		metric.WithDescription("Total payments processed by fake processor"),
@@ -75,12 +92,12 @@ func main() {
 	})
 	defer writer.Close()
 
-	log.Printf("Consuming from topic: %s", requestTopic)
+	emitLog(logger, otellog.SeverityInfo, fmt.Sprintf("Consuming from topic: %s", requestTopic))
 
 	for {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
-			log.Printf("read error: %v", err)
+			emitLog(logger, otellog.SeverityError, fmt.Sprintf("read error: %v", err))
 			continue
 		}
 
@@ -90,7 +107,7 @@ func main() {
 
 		var req PaymentRequest
 		if err := json.Unmarshal(msg.Value, &req); err != nil {
-			log.Printf("parse error: %v — value: %s", err, string(msg.Value))
+			emitLog(logger, otellog.SeverityError, fmt.Sprintf("parse error: %v — value: %s", err, string(msg.Value)))
 			span.SetStatus(codes.Error, err.Error())
 			span.RecordError(err)
 			statusVal = "FAILED"
@@ -102,11 +119,18 @@ func main() {
 
 			resp := simulatePayment(req)
 			statusVal = resp.Status
-			log.Printf("Processed ticketId=%s → status=%s txn=%s", resp.TicketId, resp.Status, resp.TransactionId)
+
+			// Log processing result with attributes
+			emitLog(logger, otellog.SeverityInfo,
+				fmt.Sprintf("Processed ticketId=%s → status=%s txn=%s", resp.TicketId, resp.Status, resp.TransactionId),
+				otellog.String("ticket_id", resp.TicketId),
+				otellog.String("status", resp.Status),
+				otellog.String("txn_id", resp.TransactionId),
+			)
 
 			respJSON, _ := json.Marshal(resp)
 			if err := writer.WriteMessages(ctx, kafka.Message{Value: respJSON}); err != nil {
-				log.Printf("publish error: %v", err)
+				emitLog(logger, otellog.SeverityError, fmt.Sprintf("publish error: %v", err))
 				span.SetStatus(codes.Error, err.Error())
 				span.RecordError(err)
 				statusVal = "FAILED"

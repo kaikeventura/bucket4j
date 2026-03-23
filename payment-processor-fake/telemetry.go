@@ -6,9 +6,12 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -25,7 +28,9 @@ func setupOtel(ctx context.Context) (func(context.Context) error, error) {
 		return nil, fmt.Errorf("resource.New: %w", err)
 	}
 
-	// Usa o exporter HTTP para traces, que se configura via env vars
+	// -------------------------------------------------------------------------
+	// TRACES (HTTP)
+	// -------------------------------------------------------------------------
 	traceExp, err := otlptracehttp.New(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("otlptracehttp.New: %w", err)
@@ -36,7 +41,9 @@ func setupOtel(ctx context.Context) (func(context.Context) error, error) {
 		sdktrace.WithResource(res),
 	)
 
-	// Usa o exporter HTTP para métricas, que se configura via env vars
+	// -------------------------------------------------------------------------
+	// METRICS (HTTP)
+	// -------------------------------------------------------------------------
 	metricExp, err := otlpmetrichttp.New(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("otlpmetrichttp.New: %w", err)
@@ -47,19 +54,41 @@ func setupOtel(ctx context.Context) (func(context.Context) error, error) {
 		sdkmetric.WithResource(res),
 	)
 
+	// -------------------------------------------------------------------------
+	// LOGS (HTTP)
+	// -------------------------------------------------------------------------
+	logExp, err := otlploghttp.New(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("otlploghttp.New: %w", err)
+	}
+
+	lp := sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExp)),
+		sdklog.WithResource(res),
+	)
+
 	otel.SetTracerProvider(tp)
 	otel.SetMeterProvider(mp)
+	global.SetLoggerProvider(lp)
+
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
 	))
 
 	return func(ctx context.Context) error {
+		var errs []error
 		if err := tp.Shutdown(ctx); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 		if err := mp.Shutdown(ctx); err != nil {
-			return err
+			errs = append(errs, err)
+		}
+		if err := lp.Shutdown(ctx); err != nil {
+			errs = append(errs, err)
+		}
+		if len(errs) > 0 {
+			return fmt.Errorf("shutdown errors: %v", errs)
 		}
 		return nil
 	}, nil

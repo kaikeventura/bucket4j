@@ -71,6 +71,7 @@ services:
       # Endpoint HTTP para o Collector
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_SERVICE_NAME: payment-processor-fake
+      OTEL_LOGS_EXPORTER: otlp
     depends_on:
       - kafka
     deploy:
