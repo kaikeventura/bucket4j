@@ -8,12 +8,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
-import io.opentelemetry.api.metrics.DoubleHistogram;
-import io.opentelemetry.api.metrics.LongCounter;
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.StatusCode;
-import io.opentelemetry.api.trace.Tracer;
-import io.opentelemetry.context.Scope;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -68,14 +62,11 @@ public class SqsMessageListener {
     }
 
     private void process(String body) throws Exception {
-        Span span = GlobalOpenTelemetry.getTracer("com.example.ticketsales").spanBuilder("sqs.process_ticket").startSpan();
         long start = System.nanoTime();
         String status = "SUCCESS";
 
-        try (Scope ignored = span.makeCurrent()) {
+        try {
             TicketSaleMessage ticketMsg = objectMapper.readValue(body, TicketSaleMessage.class);
-            span.setAttribute("ticket.id", ticketMsg.getTicketId());
-            span.setAttribute("ticket.amount", ticketMsg.getAmount());
             log.info("Received from SQS: {}", ticketMsg);
 
             PaymentRequest request = new PaymentRequest();
@@ -96,29 +87,25 @@ public class SqsMessageListener {
             payment.setTimestamp(Instant.now().toString());
             paymentRepository.save(payment);
             log.info("Saved PENDING payment for ticketId={}", ticketMsg.getTicketId());
-
-            span.setStatus(StatusCode.OK);
         } catch (Exception e) {
             status = "FAILED";
-            span.setStatus(StatusCode.ERROR, e.getMessage());
-            span.recordException(e);
             throw e;
         } finally {
             double durationSeconds = (System.nanoTime() - start) / 1e9;
             Attributes attrs = Attributes.of(
+                    AttributeKey.stringKey("service_name"), "ticket-sales-processor",
                     AttributeKey.stringKey("status"), status
             );
-            GlobalOpenTelemetry.getMeter("com.example.ticketsales").counterBuilder("ticketsProcessedCounter")
+            GlobalOpenTelemetry.getMeter("com.example.ticketsales").counterBuilder("tickets_processed_total")
                     .setDescription("Total number of tickets processed")
                     .setUnit("1")
                     .build()
                     .add(1, attrs);
-            GlobalOpenTelemetry.getMeter("com.example.ticketsales").histogramBuilder("processingDurationHistogram")
+            GlobalOpenTelemetry.getMeter("com.example.ticketsales").histogramBuilder("processing_duration_seconds")
                     .setDescription("Histogram of processing duration")
                     .setUnit("seconds")
                     .build()
                     .record(durationSeconds, attrs);
-            span.end();
         }
     }
 }

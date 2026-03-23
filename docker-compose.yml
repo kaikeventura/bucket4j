@@ -41,6 +41,9 @@ services:
       AWS_ENDPOINT: http://localstack:4566
       AWS_REGION: us-east-1
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://otel-collector:4318
       OTEL_EXPORTER_OTLP_PROTOCOL: http
       OTEL_SERVICE_NAME: ticket-sales-processor
       OTEL_TRACES_EXPORTER: otlp
@@ -48,6 +51,7 @@ services:
       OTEL_LOGS_EXPORTER: otlp
     depends_on:
       - kafka
+      - otel-collector
       - localstack
     deploy:
       replicas: 3
