@@ -3,12 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -16,30 +15,33 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 )
 
-func setupOtel(ctx context.Context) (shutdown func(context.Context) error, err error) {
-	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	if endpoint == "" {
-		endpoint = "otel-collector:4317"
+func setupOtel(ctx context.Context) (func(context.Context) error, error) {
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceNameKey.String("payment-processor-fake"),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("resource.New: %w", err)
 	}
 
-	res, err := resource.New(ctx, resource.WithAttributes(semconv.ServiceName("payment-processor-fake")))
+	// Usa o exporter HTTP para traces, que se configura via env vars
+	traceExp, err := otlptracehttp.New(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("otel resource: %w", err)
+		return nil, fmt.Errorf("otlptracehttp.New: %w", err)
 	}
 
-	traceExp, err := otlptracegrpc.New(ctx, otlptracegrpc.WithEndpoint("otel-collector:4317"))
-	if err != nil {
-		return nil, fmt.Errorf("trace exporter: %w", err)
-	}
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExp),
 		sdktrace.WithResource(res),
 	)
 
-	metricExp, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithEndpoint("otel-collector:4317"))
+	// Usa o exporter HTTP para métricas, que se configura via env vars
+	metricExp, err := otlpmetrichttp.New(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("metric exporter: %w", err)
+		return nil, fmt.Errorf("otlpmetrichttp.New: %w", err)
 	}
+
 	mp := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(15*time.Second))),
 		sdkmetric.WithResource(res),

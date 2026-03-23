@@ -69,7 +69,7 @@ services:
       KAFKA_BROKER: kafka:9092
       REQUEST_TOPIC: payment-request
       RESPONSE_TOPIC: payment-response
-      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     depends_on:
       - kafka
     deploy:

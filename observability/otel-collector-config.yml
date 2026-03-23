@@ -16,7 +16,7 @@ processors:
     attributes:
       - action: insert
         key: loki.resource.labels
-        value: service.name
+        from_attribute: service.name
 
 exporters:
   otlp/tempo:
@@ -50,5 +50,5 @@ service:
 
     logs:
       receivers: [otlp]
-      processors: [resource/loki_labels, batch]
+      processors: [batch, resource/loki_labels]
       exporters: [loki]
