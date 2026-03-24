@@ -48,7 +48,7 @@ public class SqsMessageListener {
     @Value("${kafka.topics.payment-request}")
     private String paymentRequestTopic;
 
-    @Scheduled(fixedDelay = 0)
+    @Scheduled(fixedDelay = 1)
     public void poll() {
         try {
             // 1. Block until a rate token (TPS) is available.
