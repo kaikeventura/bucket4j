@@ -14,6 +14,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -36,7 +37,10 @@ public class SqsMessageListener {
     private final ProxyManager<String> proxyManager;
     private final BucketConfiguration concurrencyConfiguration;
     private final BucketConfiguration rateConfiguration;
+    private final TaskExecutor taskExecutor;
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    private String cachedQueueUrl;
 
     @Value("${aws.sqs.queue-name}")
     private String queueName;
@@ -44,57 +48,65 @@ public class SqsMessageListener {
     @Value("${kafka.topics.payment-request}")
     private String paymentRequestTopic;
 
-    @Scheduled(fixedDelay = 100)
+    @Scheduled(fixedDelay = 10)
     public void poll() {
-        int maxToFetch = 10;
-        // 1. Try to consume concurrency tokens
-        long concurrencyConsumed = proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).tryConsumeAsMuchAsPossible(maxToFetch);
-        if (concurrencyConsumed <= 0) return;
-
-        // 2. Try to consume rate (TPS) tokens up to what we got from concurrency
-        long rateConsumed = proxyManager.builder().build("payment-rate-bucket", rateConfiguration).tryConsumeAsMuchAsPossible(concurrencyConsumed);
-
-        // Return excess concurrency tokens if we didn't get enough rate tokens
-        if (rateConsumed < concurrencyConsumed) {
-            proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(concurrencyConsumed - rateConsumed);
+        // 1. Try to consume 1 concurrency token
+        if (!proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).tryConsume(1)) {
+            return;
         }
 
-        if (rateConsumed <= 0) return;
-
-        // We will keep track of how many concurrency tokens need to be returned manually (those for which we didn't successfully publish to Kafka)
-        long concurrencyTokensToReturn = rateConsumed;
+        boolean concurrencyTokenReturned = false;
         try {
-            String queueUrl = sqsClient.getQueueUrl(r -> r.queueName(queueName)).queueUrl();
+            // 2. Try to consume 1 rate (TPS) token
+            if (!proxyManager.builder().build("payment-rate-bucket", rateConfiguration).tryConsume(1)) {
+                proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
+                concurrencyTokenReturned = true;
+                return;
+            }
+
+            String queueUrl = getQueueUrl();
             List<Message> messages = sqsClient.receiveMessage(
                     ReceiveMessageRequest.builder()
                             .queueUrl(queueUrl)
-                            .maxNumberOfMessages((int) rateConsumed)
+                            .maxNumberOfMessages(1)
                             .waitTimeSeconds(2)
                             .build()
             ).messages();
 
+            if (messages.isEmpty()) {
+                proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
+                proxyManager.builder().build("payment-rate-bucket", rateConfiguration).addTokens(1);
+                concurrencyTokenReturned = true;
+                return;
+            }
+
             for (Message msg : messages) {
-                try {
-                    process(msg.body());
-                    // Successfully processed (or at least sent to Kafka/DynamoDB).
-                    // Concurrency token will now be returned by PaymentResponseListener or leaked (handled by safety refill).
-                    concurrencyTokensToReturn--;
-                } catch (Exception e) {
-                    log.error("Failed to process message: {}", msg.body(), e);
-                    // concurrencyTokensToReturn is NOT decremented, so it will be returned in finally block
-                } finally {
-                    sqsClient.deleteMessage(DeleteMessageRequest.builder()
-                            .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
-                }
+                taskExecutor.execute(() -> {
+                    try {
+                        process(msg.body());
+                    } catch (Exception e) {
+                        log.error("Failed to process message: {}", msg.body(), e);
+                        proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
+                    } finally {
+                        sqsClient.deleteMessage(DeleteMessageRequest.builder()
+                                .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
+                    }
+                });
             }
         } catch (Exception e) {
             log.error("Error polling SQS: {}", e.getMessage());
-        } finally {
-            if (concurrencyTokensToReturn > 0) {
-                proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(concurrencyTokensToReturn);
-                log.info("Returned {} concurrency tokens to bucket", concurrencyTokensToReturn);
+            if (!concurrencyTokenReturned) {
+                proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
+                proxyManager.builder().build("payment-rate-bucket", rateConfiguration).addTokens(1);
             }
         }
+    }
+
+    private String getQueueUrl() {
+        if (cachedQueueUrl == null) {
+            cachedQueueUrl = sqsClient.getQueueUrl(r -> r.queueName(queueName)).queueUrl();
+        }
+        return cachedQueueUrl;
     }
 
     private void process(String body) throws Exception {

@@ -8,6 +8,7 @@ import io.github.bucket4j.distributed.proxy.RemoteBucketBuilder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.core.task.SyncTaskExecutor;
 import org.springframework.kafka.core.KafkaTemplate;
 import software.amazon.awssdk.services.sqs.SqsClient;
 
@@ -36,7 +37,15 @@ class SqsMessageListenerTest {
         when(proxyManager.builder()).thenReturn(builder);
         when(builder.build(anyString(), any(BucketConfiguration.class))).thenReturn(mock(io.github.bucket4j.distributed.BucketProxy.class));
 
-        listener = new SqsMessageListener(mock(SqsClient.class), kafkaTemplate, paymentRepository, proxyManager, concurrencyConfiguration, rateConfiguration);
+        listener = new SqsMessageListener(
+            mock(SqsClient.class),
+            kafkaTemplate,
+            paymentRepository,
+            proxyManager,
+            concurrencyConfiguration,
+            rateConfiguration,
+            new SyncTaskExecutor()
+        );
         setField(listener, "paymentRequestTopic", "payment-request");
         setField(listener, "queueName", "ticket-sales-queue");
     }
