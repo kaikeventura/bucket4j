@@ -38,6 +38,8 @@ services:
     build: ./ticket-sales-processor
     environment:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
       AWS_ENDPOINT: http://localstack:4566
       AWS_REGION: us-east-1
       # Apenas o endpoint base é necessário
@@ -52,6 +54,7 @@ services:
       - kafka
       - otel-collector
       - localstack
+      - redis
     deploy:
       replicas: 3
       resources:
@@ -96,6 +99,16 @@ services:
     depends_on:
       localstack:
         condition: service_healthy
+
+  redis:
+    image: redis:7.2-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   localstack:
     container_name: localstack_bucket4j

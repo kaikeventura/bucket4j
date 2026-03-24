@@ -5,9 +5,12 @@ import com.example.ticketsales.model.PaymentRequest;
 import com.example.ticketsales.model.TicketSaleMessage;
 import com.example.ticketsales.repository.PaymentRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.bucket4j.BucketConfiguration;
+import io.github.bucket4j.distributed.proxy.ProxyManager;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -30,6 +33,8 @@ public class SqsMessageListener {
     private final SqsClient sqsClient;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final PaymentRepository paymentRepository;
+    private final ProxyManager<String> proxyManager;
+    private final BucketConfiguration bucketConfiguration;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${aws.sqs.queue-name}")
@@ -38,19 +43,38 @@ public class SqsMessageListener {
     @Value("${kafka.topics.payment-request}")
     private String paymentRequestTopic;
 
-    @Scheduled(fixedDelay = 2000)
+    @PostConstruct
+    public void init() {
+        proxyManager.builder().build("payment-concurrency-bucket", bucketConfiguration);
+    }
+
+    @Scheduled(fixedDelay = 100)
     public void poll() {
+        int tokensToConsume = 10;
+        long tokensActuallyConsumed = proxyManager.builder().build("payment-concurrency-bucket", bucketConfiguration).tryConsumeAsMuchAsPossible(tokensToConsume);
+
+        if (tokensActuallyConsumed <= 0) {
+            return;
+        }
+
+        long tokensToReturn = tokensActuallyConsumed;
         try {
             String queueUrl = sqsClient.getQueueUrl(r -> r.queueName(queueName)).queueUrl();
             List<Message> messages = sqsClient.receiveMessage(
-                    ReceiveMessageRequest.builder().queueUrl(queueUrl).maxNumberOfMessages(10).build()
+                    ReceiveMessageRequest.builder()
+                            .queueUrl(queueUrl)
+                            .maxNumberOfMessages((int) tokensActuallyConsumed)
+                            .waitTimeSeconds(5)
+                            .build()
             ).messages();
 
             for (Message msg : messages) {
                 try {
                     process(msg.body());
+                    tokensToReturn--; // Token is now managed by the response listener or failed process
                 } catch (Exception e) {
                     log.error("Failed to process message: {}", msg.body(), e);
+                    // Token returned here if processing fails before publishing to Kafka
                 } finally {
                     sqsClient.deleteMessage(DeleteMessageRequest.builder()
                             .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
@@ -58,6 +82,11 @@ public class SqsMessageListener {
             }
         } catch (Exception e) {
             log.error("Error polling SQS: {}", e.getMessage());
+        } finally {
+            if (tokensToReturn > 0) {
+                proxyManager.builder().build("payment-concurrency-bucket", bucketConfiguration).addTokens(tokensToReturn);
+                log.info("Returned {} tokens to bucket", tokensToReturn);
+            }
         }
     }
 

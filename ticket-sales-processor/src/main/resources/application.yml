@@ -25,6 +25,9 @@ kafka:
     payment-request: payment-request
     payment-response: payment-response
 
+ratelimit:
+  concurrency: 50
+
 otel:
   exporter:
     otlp:
