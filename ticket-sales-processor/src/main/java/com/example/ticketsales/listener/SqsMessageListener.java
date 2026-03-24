@@ -48,19 +48,18 @@ public class SqsMessageListener {
     @Value("${kafka.topics.payment-request}")
     private String paymentRequestTopic;
 
-    @Scheduled(fixedDelay = 10)
+    @Scheduled(fixedDelay = 0)
     public void poll() {
-        // 1. Try to consume 1 concurrency token
-        if (!proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).tryConsume(1)) {
-            return;
-        }
-
-        boolean concurrencyTokenReturned = false;
         try {
-            // 2. Try to consume 1 rate (TPS) token
-            if (!proxyManager.builder().build("payment-rate-bucket", rateConfiguration).tryConsume(1)) {
-                proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
-                concurrencyTokenReturned = true;
+            // 1. Block until a rate token (TPS) is available.
+            // This ensures a steady, linear flow according to the limit.
+            proxyManager.builder().build("payment-rate-bucket", rateConfiguration).asBlocking().consume(1);
+
+            // 2. Now that we have a TPS slot, try to get a concurrency slot.
+            // If concurrency is full, we must return the rate token to avoid blocking others unnecessarily
+            // and try again in the next cycle.
+            if (!proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).tryConsume(1)) {
+                proxyManager.builder().build("payment-rate-bucket", rateConfiguration).addTokens(1);
                 return;
             }
 
@@ -69,14 +68,14 @@ public class SqsMessageListener {
                     ReceiveMessageRequest.builder()
                             .queueUrl(queueUrl)
                             .maxNumberOfMessages(1)
-                            .waitTimeSeconds(2)
+                            .waitTimeSeconds(5) // Long polling to be efficient
                             .build()
             ).messages();
 
             if (messages.isEmpty()) {
+                // No messages? Return both tokens so they can be reused.
                 proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
                 proxyManager.builder().build("payment-rate-bucket", rateConfiguration).addTokens(1);
-                concurrencyTokenReturned = true;
                 return;
             }
 
@@ -86,6 +85,7 @@ public class SqsMessageListener {
                         process(msg.body());
                     } catch (Exception e) {
                         log.error("Failed to process message: {}", msg.body(), e);
+                        // Processing failed before hand-off? Return concurrency token.
                         proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
                     } finally {
                         sqsClient.deleteMessage(DeleteMessageRequest.builder()
@@ -93,12 +93,12 @@ public class SqsMessageListener {
                     }
                 });
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("Polling interrupted");
         } catch (Exception e) {
             log.error("Error polling SQS: {}", e.getMessage());
-            if (!concurrencyTokenReturned) {
-                proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
-                proxyManager.builder().build("payment-rate-bucket", rateConfiguration).addTokens(1);
-            }
+            // On unexpected error, we don't know state of tokens, but safety refill will handle it.
         }
     }
 
