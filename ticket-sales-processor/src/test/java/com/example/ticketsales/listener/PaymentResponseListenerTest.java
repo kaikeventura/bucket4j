@@ -15,7 +15,7 @@ class PaymentResponseListenerTest {
 
     private PaymentRepository paymentRepository;
     private ProxyManager<String> proxyManager;
-    private BucketConfiguration bucketConfiguration;
+    private BucketConfiguration concurrencyConfiguration;
     private PaymentResponseListener listener;
 
     @BeforeEach
@@ -23,13 +23,13 @@ class PaymentResponseListenerTest {
     void setUp() {
         paymentRepository = mock(PaymentRepository.class);
         proxyManager = mock(ProxyManager.class);
-        bucketConfiguration = mock(BucketConfiguration.class);
+        concurrencyConfiguration = mock(BucketConfiguration.class);
 
         RemoteBucketBuilder<String> builder = mock(RemoteBucketBuilder.class);
         when(proxyManager.builder()).thenReturn(builder);
         when(builder.build(anyString(), any(BucketConfiguration.class))).thenReturn(mock(io.github.bucket4j.distributed.BucketProxy.class));
 
-        listener = new PaymentResponseListener(paymentRepository, proxyManager, bucketConfiguration);
+        listener = new PaymentResponseListener(paymentRepository, proxyManager, concurrencyConfiguration);
     }
 
     @Test

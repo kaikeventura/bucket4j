@@ -34,7 +34,8 @@ public class SqsMessageListener {
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final PaymentRepository paymentRepository;
     private final ProxyManager<String> proxyManager;
-    private final BucketConfiguration bucketConfiguration;
+    private final BucketConfiguration concurrencyConfiguration;
+    private final BucketConfiguration rateConfiguration;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${aws.sqs.queue-name}")
@@ -43,38 +44,44 @@ public class SqsMessageListener {
     @Value("${kafka.topics.payment-request}")
     private String paymentRequestTopic;
 
-    @PostConstruct
-    public void init() {
-        proxyManager.builder().build("payment-concurrency-bucket", bucketConfiguration);
-    }
-
     @Scheduled(fixedDelay = 100)
     public void poll() {
-        int tokensToConsume = 10;
-        long tokensActuallyConsumed = proxyManager.builder().build("payment-concurrency-bucket", bucketConfiguration).tryConsumeAsMuchAsPossible(tokensToConsume);
+        int maxToFetch = 10;
+        // 1. Try to consume concurrency tokens
+        long concurrencyConsumed = proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).tryConsumeAsMuchAsPossible(maxToFetch);
+        if (concurrencyConsumed <= 0) return;
 
-        if (tokensActuallyConsumed <= 0) {
-            return;
+        // 2. Try to consume rate (TPS) tokens up to what we got from concurrency
+        long rateConsumed = proxyManager.builder().build("payment-rate-bucket", rateConfiguration).tryConsumeAsMuchAsPossible(concurrencyConsumed);
+
+        // Return excess concurrency tokens if we didn't get enough rate tokens
+        if (rateConsumed < concurrencyConsumed) {
+            proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(concurrencyConsumed - rateConsumed);
         }
 
-        long tokensToReturn = tokensActuallyConsumed;
+        if (rateConsumed <= 0) return;
+
+        // We will keep track of how many concurrency tokens need to be returned manually (those for which we didn't successfully publish to Kafka)
+        long concurrencyTokensToReturn = rateConsumed;
         try {
             String queueUrl = sqsClient.getQueueUrl(r -> r.queueName(queueName)).queueUrl();
             List<Message> messages = sqsClient.receiveMessage(
                     ReceiveMessageRequest.builder()
                             .queueUrl(queueUrl)
-                            .maxNumberOfMessages((int) tokensActuallyConsumed)
-                            .waitTimeSeconds(5)
+                            .maxNumberOfMessages((int) rateConsumed)
+                            .waitTimeSeconds(2)
                             .build()
             ).messages();
 
             for (Message msg : messages) {
                 try {
                     process(msg.body());
-                    tokensToReturn--; // Token is now managed by the response listener or failed process
+                    // Successfully processed (or at least sent to Kafka/DynamoDB).
+                    // Concurrency token will now be returned by PaymentResponseListener or leaked (handled by safety refill).
+                    concurrencyTokensToReturn--;
                 } catch (Exception e) {
                     log.error("Failed to process message: {}", msg.body(), e);
-                    // Token returned here if processing fails before publishing to Kafka
+                    // concurrencyTokensToReturn is NOT decremented, so it will be returned in finally block
                 } finally {
                     sqsClient.deleteMessage(DeleteMessageRequest.builder()
                             .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
@@ -83,9 +90,9 @@ public class SqsMessageListener {
         } catch (Exception e) {
             log.error("Error polling SQS: {}", e.getMessage());
         } finally {
-            if (tokensToReturn > 0) {
-                proxyManager.builder().build("payment-concurrency-bucket", bucketConfiguration).addTokens(tokensToReturn);
-                log.info("Returned {} tokens to bucket", tokensToReturn);
+            if (concurrencyTokensToReturn > 0) {
+                proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(concurrencyTokensToReturn);
+                log.info("Returned {} concurrency tokens to bucket", concurrencyTokensToReturn);
             }
         }
     }

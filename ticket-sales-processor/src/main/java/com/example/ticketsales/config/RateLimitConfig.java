@@ -27,6 +27,9 @@ public class RateLimitConfig {
     @Value("${spring.data.redis.port:6379}")
     private int redisPort;
 
+    @Value("${ratelimit.tps:50}")
+    private int tpsLimit;
+
     @Value("${ratelimit.concurrency:50}")
     private int concurrencyLimit;
 
@@ -48,9 +51,16 @@ public class RateLimitConfig {
     }
 
     @Bean
-    public BucketConfiguration bucketConfiguration() {
+    public BucketConfiguration concurrencyConfiguration() {
         return BucketConfiguration.builder()
                 .addLimit(Bandwidth.classic(concurrencyLimit, Refill.greedy(1, Duration.ofMinutes(1))))
+                .build();
+    }
+
+    @Bean
+    public BucketConfiguration rateConfiguration() {
+        return BucketConfiguration.builder()
+                .addLimit(Bandwidth.classic(tpsLimit, Refill.greedy(tpsLimit, Duration.ofSeconds(1))))
                 .build();
     }
 }

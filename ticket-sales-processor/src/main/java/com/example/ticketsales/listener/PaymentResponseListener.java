@@ -21,7 +21,7 @@ public class PaymentResponseListener {
 
     private final PaymentRepository paymentRepository;
     private final ProxyManager<String> proxyManager;
-    private final BucketConfiguration bucketConfiguration;
+    private final BucketConfiguration concurrencyConfiguration;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @KafkaListener(topics = "${kafka.topics.payment-response}", groupId = "${spring.kafka.consumer.group-id}")
@@ -37,7 +37,7 @@ public class PaymentResponseListener {
             paymentRepository.updateStatus(response.getTicketId(), response.getStatus(), response.getTransactionId());
             log.info("Updated status={} for ticketId={}", response.getStatus(), response.getTicketId());
 
-            proxyManager.builder().build("payment-concurrency-bucket", bucketConfiguration).addTokens(1);
+            proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
             tokenReturned = true;
             log.info("Token returned to bucket for ticketId={}", response.getTicketId());
 
@@ -48,7 +48,7 @@ public class PaymentResponseListener {
             log.error("Error processing payment response", e);
         } finally {
             if (!tokenReturned) {
-                proxyManager.builder().build("payment-concurrency-bucket", bucketConfiguration).addTokens(1);
+                proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
                 log.info("Token returned to bucket in finally block");
             }
             span.end();

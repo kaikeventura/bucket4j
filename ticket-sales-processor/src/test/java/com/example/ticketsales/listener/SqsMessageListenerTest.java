@@ -19,7 +19,8 @@ class SqsMessageListenerTest {
     private KafkaTemplate<String, String> kafkaTemplate;
     private PaymentRepository paymentRepository;
     private ProxyManager<String> proxyManager;
-    private BucketConfiguration bucketConfiguration;
+    private BucketConfiguration concurrencyConfiguration;
+    private BucketConfiguration rateConfiguration;
     private SqsMessageListener listener;
 
     @BeforeEach
@@ -28,13 +29,14 @@ class SqsMessageListenerTest {
         kafkaTemplate = mock(KafkaTemplate.class);
         paymentRepository = mock(PaymentRepository.class);
         proxyManager = mock(ProxyManager.class);
-        bucketConfiguration = mock(BucketConfiguration.class);
+        concurrencyConfiguration = mock(BucketConfiguration.class);
+        rateConfiguration = mock(BucketConfiguration.class);
 
         RemoteBucketBuilder<String> builder = mock(RemoteBucketBuilder.class);
         when(proxyManager.builder()).thenReturn(builder);
         when(builder.build(anyString(), any(BucketConfiguration.class))).thenReturn(mock(io.github.bucket4j.distributed.BucketProxy.class));
 
-        listener = new SqsMessageListener(mock(SqsClient.class), kafkaTemplate, paymentRepository, proxyManager, bucketConfiguration);
+        listener = new SqsMessageListener(mock(SqsClient.class), kafkaTemplate, paymentRepository, proxyManager, concurrencyConfiguration, rateConfiguration);
         setField(listener, "paymentRequestTopic", "payment-request");
         setField(listener, "queueName", "ticket-sales-queue");
     }
