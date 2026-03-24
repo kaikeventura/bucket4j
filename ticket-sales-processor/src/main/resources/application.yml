@@ -27,7 +27,7 @@ kafka:
 
 ratelimit:
   tps: 50
-  concurrency: 50
+  concurrency: 100
 
 otel:
   exporter:

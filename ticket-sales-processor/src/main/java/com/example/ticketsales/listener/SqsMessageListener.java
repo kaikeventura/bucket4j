@@ -48,35 +48,48 @@ public class SqsMessageListener {
     @Value("${kafka.topics.payment-request}")
     private String paymentRequestTopic;
 
-    @Scheduled(fixedDelay = 1)
+    @Scheduled(fixedDelay = 10)
     public void poll() {
         try {
-            // 1. Block until a rate token (TPS) is available.
-            // This ensures a steady, linear flow according to the limit.
-            proxyManager.builder().build("payment-rate-bucket", rateConfiguration).asBlocking().consume(1);
+            // 1. Try to acquire a batch of tokens for concurrency (up to 10)
+            long concurrencyAvailable = proxyManager.builder()
+                    .build("payment-concurrency-bucket", concurrencyConfiguration)
+                    .tryConsumeAsMuchAsPossible(10);
 
-            // 2. Now that we have a TPS slot, try to get a concurrency slot.
-            // If concurrency is full, we must return the rate token to avoid blocking others unnecessarily
-            // and try again in the next cycle.
-            if (!proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).tryConsume(1)) {
-                proxyManager.builder().build("payment-rate-bucket", rateConfiguration).addTokens(1);
+            if (concurrencyAvailable <= 0) {
+                return;
+            }
+
+            // 2. Try to acquire rate tokens (TPS) up to the concurrency we just secured
+            long rateAvailable = proxyManager.builder()
+                    .build("payment-rate-bucket", rateConfiguration)
+                    .tryConsumeAsMuchAsPossible(concurrencyAvailable);
+
+            // Return excess concurrency tokens if we didn't get enough rate tokens
+            if (rateAvailable < concurrencyAvailable) {
+                proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration)
+                        .addTokens(concurrencyConsumedReturn(concurrencyAvailable, rateAvailable));
+            }
+
+            if (rateAvailable <= 0) {
                 return;
             }
 
             String queueUrl = getQueueUrl();
+            // 3. Receive messages up to the available capacity
             List<Message> messages = sqsClient.receiveMessage(
                     ReceiveMessageRequest.builder()
                             .queueUrl(queueUrl)
-                            .maxNumberOfMessages(1)
-                            .waitTimeSeconds(5) // Long polling to be efficient
+                            .maxNumberOfMessages((int) rateAvailable)
+                            .waitTimeSeconds(2)
                             .build()
             ).messages();
 
-            if (messages.isEmpty()) {
-                // No messages? Return both tokens so they can be reused.
-                proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
-                proxyManager.builder().build("payment-rate-bucket", rateConfiguration).addTokens(1);
-                return;
+            // Return unused tokens if SQS didn't have enough messages
+            if (messages.size() < rateAvailable) {
+                long unused = rateAvailable - messages.size();
+                proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(unused);
+                proxyManager.builder().build("payment-rate-bucket", rateConfiguration).addTokens(unused);
             }
 
             for (Message msg : messages) {
@@ -85,7 +98,7 @@ public class SqsMessageListener {
                         process(msg.body());
                     } catch (Exception e) {
                         log.error("Failed to process message: {}", msg.body(), e);
-                        // Processing failed before hand-off? Return concurrency token.
+                        // Return concurrency token on failure before Kafka hand-off
                         proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
                     } finally {
                         sqsClient.deleteMessage(DeleteMessageRequest.builder()
@@ -93,13 +106,13 @@ public class SqsMessageListener {
                     }
                 });
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("Polling interrupted");
         } catch (Exception e) {
             log.error("Error polling SQS: {}", e.getMessage());
-            // On unexpected error, we don't know state of tokens, but safety refill will handle it.
         }
+    }
+
+    private long concurrencyConsumedReturn(long available, long consumed) {
+        return available - consumed;
     }
 
     private String getQueueUrl() {
