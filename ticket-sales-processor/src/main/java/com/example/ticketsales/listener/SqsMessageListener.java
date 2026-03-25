@@ -4,9 +4,8 @@ import com.example.ticketsales.model.Payment;
 import com.example.ticketsales.model.PaymentRequest;
 import com.example.ticketsales.model.TicketSaleMessage;
 import com.example.ticketsales.repository.PaymentRepository;
+import com.example.ticketsales.service.RateLimiterService;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.bucket4j.BucketConfiguration;
-import io.github.bucket4j.distributed.proxy.ProxyManager;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
@@ -14,9 +13,8 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.task.TaskExecutor;
+import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
@@ -34,10 +32,8 @@ public class SqsMessageListener {
     private final SqsClient sqsClient;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final PaymentRepository paymentRepository;
-    private final ProxyManager<String> proxyManager;
-    private final BucketConfiguration concurrencyConfiguration;
-    private final BucketConfiguration rateConfiguration;
-    private final TaskExecutor taskExecutor;
+    private final RateLimiterService rateLimiter;
+    private final AsyncTaskExecutor taskExecutor;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private String cachedQueueUrl;
@@ -48,55 +44,70 @@ public class SqsMessageListener {
     @Value("${kafka.topics.payment-request}")
     private String paymentRequestTopic;
 
-    @Scheduled(fixedDelay = 1)
-    public void poll() {
-        // High frequency dispatcher: try to secure 1 token from both buckets
-        // If successful, dispatch a virtual thread to do the heavy lifting (SQS poll)
-        if (!proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).tryConsume(1)) {
-            return;
+    @PostConstruct
+    public void init() {
+        // Start multiple concurrent long-polling workers to neutralize SQS latency.
+        // Since they all coordinate through the same Redis buckets, the limits remain global.
+        for (int i = 0; i < 20; i++) {
+            taskExecutor.execute(this::continuousPoll);
         }
-
-        if (!proxyManager.builder().build("payment-rate-bucket", rateConfiguration).tryConsume(1)) {
-            proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
-            return;
-        }
-
-        taskExecutor.execute(this::pollAndProcess);
     }
 
-    private void pollAndProcess() {
-        String queueUrl = getQueueUrl();
-        boolean messageFound = false;
-        try {
-            List<Message> messages = sqsClient.receiveMessage(
-                    ReceiveMessageRequest.builder()
-                            .queueUrl(queueUrl)
-                            .maxNumberOfMessages(1)
-                            .waitTimeSeconds(2) // Long polling for efficiency
-                            .build()
-            ).messages();
+    public void continuousPoll() {
+        log.info("Starting continuous SQS polling loop...");
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                // 1. Precise blocking on Rate Token (TPS)
+                rateLimiter.acquireRateTokenBlocking();
 
-            if (!messages.isEmpty()) {
-                messageFound = true;
-                Message msg = messages.get(0);
-                try {
-                    process(msg.body());
-                } catch (Exception e) {
-                    log.error("Failed to process message: {}", msg.body(), e);
-                    // Return concurrency token if processing fails before kafka send
-                    proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
-                } finally {
-                    sqsClient.deleteMessage(DeleteMessageRequest.builder()
-                            .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
+                // 2. Try Concurrency Token
+                if (!rateLimiter.acquireConcurrencyToken()) {
+                    // If full, return rate token and wait a bit to avoid hot-loop
+                    rateLimiter.releaseRateToken();
+                    Thread.sleep(10);
+                    continue;
                 }
-            }
-        } catch (Exception e) {
-            log.error("Error polling SQS: {}", e.getMessage());
-        } finally {
-            if (!messageFound) {
-                // Return both tokens if no work was found
-                proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
-                proxyManager.builder().build("payment-rate-bucket", rateConfiguration).addTokens(1);
+
+                // 3. Perform Long Polling
+                String queueUrl = getQueueUrl();
+                List<Message> messages = sqsClient.receiveMessage(
+                        ReceiveMessageRequest.builder()
+                                .queueUrl(queueUrl)
+                                .maxNumberOfMessages(1)
+                                .waitTimeSeconds(20) // Max wait for efficiency
+                                .build()
+                ).messages();
+
+                if (messages.isEmpty()) {
+                    rateLimiter.releaseConcurrencyToken();
+                    rateLimiter.releaseRateToken();
+                    continue;
+                }
+
+                Message msg = messages.get(0);
+                taskExecutor.execute(() -> {
+                    try {
+                        process(msg.body());
+                    } catch (Exception e) {
+                        log.error("Failed to process message: {}", msg.body(), e);
+                        rateLimiter.releaseConcurrencyToken();
+                    } finally {
+                        sqsClient.deleteMessage(DeleteMessageRequest.builder()
+                                .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
+                    }
+                });
+
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                log.error("Error in continuous polling loop", e);
+                try {
+                    Thread.sleep(1000); // Backoff on major error
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             }
         }
     }

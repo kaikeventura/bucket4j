@@ -2,9 +2,7 @@ package com.example.ticketsales.listener;
 
 import com.example.ticketsales.model.Payment;
 import com.example.ticketsales.repository.PaymentRepository;
-import io.github.bucket4j.BucketConfiguration;
-import io.github.bucket4j.distributed.proxy.ProxyManager;
-import io.github.bucket4j.distributed.proxy.RemoteBucketBuilder;
+import com.example.ticketsales.service.RateLimiterService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -19,9 +17,7 @@ class SqsMessageListenerTest {
 
     private KafkaTemplate<String, String> kafkaTemplate;
     private PaymentRepository paymentRepository;
-    private ProxyManager<String> proxyManager;
-    private BucketConfiguration concurrencyConfiguration;
-    private BucketConfiguration rateConfiguration;
+    private RateLimiterService rateLimiter;
     private SqsMessageListener listener;
 
     @BeforeEach
@@ -29,22 +25,14 @@ class SqsMessageListenerTest {
     void setUp() {
         kafkaTemplate = mock(KafkaTemplate.class);
         paymentRepository = mock(PaymentRepository.class);
-        proxyManager = mock(ProxyManager.class);
-        concurrencyConfiguration = mock(BucketConfiguration.class);
-        rateConfiguration = mock(BucketConfiguration.class);
-
-        RemoteBucketBuilder<String> builder = mock(RemoteBucketBuilder.class);
-        when(proxyManager.builder()).thenReturn(builder);
-        when(builder.build(anyString(), any(BucketConfiguration.class))).thenReturn(mock(io.github.bucket4j.distributed.BucketProxy.class));
+        rateLimiter = mock(RateLimiterService.class);
 
         listener = new SqsMessageListener(
             mock(SqsClient.class),
             kafkaTemplate,
             paymentRepository,
-            proxyManager,
-            concurrencyConfiguration,
-            rateConfiguration,
-            new SyncTaskExecutor()
+            rateLimiter,
+            mock(org.springframework.core.task.AsyncTaskExecutor.class)
         );
         setField(listener, "paymentRequestTopic", "payment-request");
         setField(listener, "queueName", "ticket-sales-queue");

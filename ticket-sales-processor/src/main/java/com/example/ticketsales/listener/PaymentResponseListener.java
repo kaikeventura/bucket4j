@@ -2,9 +2,8 @@ package com.example.ticketsales.listener;
 
 import com.example.ticketsales.model.PaymentResponse;
 import com.example.ticketsales.repository.PaymentRepository;
+import com.example.ticketsales.service.RateLimiterService;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.bucket4j.BucketConfiguration;
-import io.github.bucket4j.distributed.proxy.ProxyManager;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
@@ -20,8 +19,7 @@ import org.springframework.stereotype.Component;
 public class PaymentResponseListener {
 
     private final PaymentRepository paymentRepository;
-    private final ProxyManager<String> proxyManager;
-    private final BucketConfiguration concurrencyConfiguration;
+    private final RateLimiterService rateLimiter;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @KafkaListener(topics = "${kafka.topics.payment-response}", groupId = "${spring.kafka.consumer.group-id}")
@@ -37,7 +35,7 @@ public class PaymentResponseListener {
             paymentRepository.updateStatus(response.getTicketId(), response.getStatus(), response.getTransactionId());
             log.info("Updated status={} for ticketId={}", response.getStatus(), response.getTicketId());
 
-            proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
+            rateLimiter.releaseConcurrencyToken();
             tokenReturned = true;
             log.info("Token returned to bucket for ticketId={}", response.getTicketId());
 
@@ -48,7 +46,7 @@ public class PaymentResponseListener {
             log.error("Error processing payment response", e);
         } finally {
             if (!tokenReturned) {
-                proxyManager.builder().build("payment-concurrency-bucket", concurrencyConfiguration).addTokens(1);
+                rateLimiter.releaseConcurrencyToken();
                 log.info("Token returned to bucket in finally block");
             }
             span.end();
