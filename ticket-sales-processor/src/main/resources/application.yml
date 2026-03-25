@@ -9,6 +9,9 @@ aws:
 spring:
   application:
     name: ticket-sales-processor
+  threads:
+    virtual:
+      enabled: true
   kafka:
     bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:
@@ -27,7 +30,7 @@ kafka:
 
 ratelimit:
   tps: 50
-  concurrency: 100
+  concurrency: 200
 
 otel:
   exporter:

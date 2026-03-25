@@ -15,8 +15,11 @@ import io.lettuce.core.codec.StringCodec;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.task.AsyncTaskExecutor;
+import org.springframework.core.task.support.TaskExecutorAdapter;
 
 import java.time.Duration;
+import java.util.concurrent.Executors;
 
 @Configuration
 public class RateLimitConfig {
@@ -62,5 +65,10 @@ public class RateLimitConfig {
         return BucketConfiguration.builder()
                 .addLimit(Bandwidth.classic(tpsLimit, Refill.greedy(tpsLimit, Duration.ofSeconds(1))))
                 .build();
+    }
+
+    @Bean
+    public AsyncTaskExecutor taskExecutor() {
+        return new TaskExecutorAdapter(Executors.newVirtualThreadPerTaskExecutor());
     }
 }
