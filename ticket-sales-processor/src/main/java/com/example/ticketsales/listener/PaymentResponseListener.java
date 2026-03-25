@@ -35,7 +35,7 @@ public class PaymentResponseListener {
             paymentRepository.updateStatus(response.getTicketId(), response.getStatus(), response.getTransactionId());
             log.info("Updated status={} for ticketId={}", response.getStatus(), response.getTicketId());
 
-            rateLimiter.releaseConcurrencyToken();
+            rateLimiter.releaseConcurrencyTokens(1);
             tokenReturned = true;
             log.info("Token returned to bucket for ticketId={}", response.getTicketId());
 
@@ -46,7 +46,7 @@ public class PaymentResponseListener {
             log.error("Error processing payment response", e);
         } finally {
             if (!tokenReturned) {
-                rateLimiter.releaseConcurrencyToken();
+                rateLimiter.releaseConcurrencyTokens(1);
                 log.info("Token returned to bucket in finally block");
             }
             span.end();

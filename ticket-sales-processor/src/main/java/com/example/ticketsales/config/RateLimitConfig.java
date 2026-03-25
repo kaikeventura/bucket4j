@@ -55,9 +55,9 @@ public class RateLimitConfig {
 
     @Bean
     public BucketConfiguration concurrencyConfiguration() {
-        // Refill at 5 tokens per second as a safety net against leaked tokens
+        // Safety refill: 1 token every 2 seconds to recover from leaks without bloating limit
         return BucketConfiguration.builder()
-                .addLimit(Bandwidth.classic(concurrencyLimit, Refill.greedy(5, Duration.ofSeconds(1))))
+                .addLimit(Bandwidth.classic(concurrencyLimit, Refill.greedy(1, Duration.ofSeconds(2))))
                 .build();
     }
 

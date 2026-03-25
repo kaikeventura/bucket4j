@@ -25,19 +25,19 @@ public class RateLimiterService {
         return proxyManager.builder().build(RATE_KEY, rateConfiguration);
     }
 
-    public boolean acquireConcurrencyToken() {
-        return getConcurrencyBucket().tryConsume(1);
+    public long acquireConcurrencyTokens(int count) {
+        return getConcurrencyBucket().tryConsumeAsMuchAsPossible(count);
     }
 
-    public void releaseConcurrencyToken() {
-        getConcurrencyBucket().addTokens(1);
+    public void releaseConcurrencyTokens(long count) {
+        if (count > 0) getConcurrencyBucket().addTokens(count);
     }
 
-    public void acquireRateTokenBlocking() throws InterruptedException {
-        getRateBucket().asBlocking().consume(1);
+    public long acquireRateTokens(long count) {
+        return getRateBucket().tryConsumeAsMuchAsPossible(count);
     }
 
-    public void releaseRateToken() {
-        getRateBucket().addTokens(1);
+    public void releaseRateTokens(long count) {
+        if (count > 0) getRateBucket().addTokens(count);
     }
 }

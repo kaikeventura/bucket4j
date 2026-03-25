@@ -46,56 +46,72 @@ public class SqsMessageListener {
 
     @PostConstruct
     public void init() {
-        // Start multiple concurrent long-polling workers to neutralize SQS latency.
-        // Since they all coordinate through the same Redis buckets, the limits remain global.
-        for (int i = 0; i < 20; i++) {
+        // Start a few high-capacity long-polling workers to neutralize SQS latency.
+        for (int i = 0; i < 5; i++) {
             taskExecutor.execute(this::continuousPoll);
         }
     }
 
     public void continuousPoll() {
-        log.info("Starting continuous SQS polling loop...");
+        log.info("Starting continuous optimized SQS polling loop...");
         while (!Thread.currentThread().isInterrupted()) {
             try {
-                // 1. Precise blocking on Rate Token (TPS)
-                rateLimiter.acquireRateTokenBlocking();
-
-                // 2. Try Concurrency Token
-                if (!rateLimiter.acquireConcurrencyToken()) {
-                    // If full, return rate token and wait a bit to avoid hot-loop
-                    rateLimiter.releaseRateToken();
-                    Thread.sleep(10);
+                // 1. Try to get a batch of concurrency slots (up to 10)
+                long concurrencyAcquired = rateLimiter.acquireConcurrencyTokens(10);
+                if (concurrencyAcquired <= 0) {
+                    Thread.sleep(50);
                     continue;
                 }
 
-                // 3. Perform Long Polling
+                // 2. Try to get rate tokens (TPS) matching the secured concurrency
+                long rateAcquired = rateLimiter.acquireRateTokens(concurrencyAcquired);
+
+                // Return excess concurrency tokens if TPS limit is reached
+                if (rateAcquired < concurrencyAcquired) {
+                    rateLimiter.releaseConcurrencyTokens(concurrencyAcquired - rateAcquired);
+                }
+
+                if (rateAcquired <= 0) {
+                    Thread.sleep(50);
+                    continue;
+                }
+
+                // 3. Sync Long Polling for the secured batch size
                 String queueUrl = getQueueUrl();
                 List<Message> messages = sqsClient.receiveMessage(
                         ReceiveMessageRequest.builder()
                                 .queueUrl(queueUrl)
-                                .maxNumberOfMessages(1)
-                                .waitTimeSeconds(20) // Max wait for efficiency
+                                .maxNumberOfMessages((int) rateAcquired)
+                                .waitTimeSeconds(20)
                                 .build()
                 ).messages();
 
+                // 4. Handle results and return unused tokens
                 if (messages.isEmpty()) {
-                    rateLimiter.releaseConcurrencyToken();
-                    rateLimiter.releaseRateToken();
+                    rateLimiter.releaseConcurrencyTokens(rateAcquired);
+                    rateLimiter.releaseRateTokens(rateAcquired);
                     continue;
                 }
 
-                Message msg = messages.get(0);
-                taskExecutor.execute(() -> {
-                    try {
-                        process(msg.body());
-                    } catch (Exception e) {
-                        log.error("Failed to process message: {}", msg.body(), e);
-                        rateLimiter.releaseConcurrencyToken();
-                    } finally {
-                        sqsClient.deleteMessage(DeleteMessageRequest.builder()
-                                .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
-                    }
-                });
+                if (messages.size() < rateAcquired) {
+                    long unused = rateAcquired - messages.size();
+                    rateLimiter.releaseConcurrencyTokens(unused);
+                    rateLimiter.releaseRateTokens(unused);
+                }
+
+                for (Message msg : messages) {
+                    taskExecutor.execute(() -> {
+                        try {
+                            process(msg.body());
+                        } catch (Exception e) {
+                            log.error("Failed to process message: {}", msg.body(), e);
+                            rateLimiter.releaseConcurrencyTokens(1);
+                        } finally {
+                            sqsClient.deleteMessage(DeleteMessageRequest.builder()
+                                    .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
+                        }
+                    });
+                }
 
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -103,7 +119,7 @@ public class SqsMessageListener {
             } catch (Exception e) {
                 log.error("Error in continuous polling loop", e);
                 try {
-                    Thread.sleep(1000); // Backoff on major error
+                    Thread.sleep(1000);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     break;
