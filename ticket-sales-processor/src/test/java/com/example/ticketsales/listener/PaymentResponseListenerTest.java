@@ -1,6 +1,7 @@
 package com.example.ticketsales.listener;
 
 import com.example.ticketsales.repository.PaymentRepository;
+import com.example.ticketsales.service.RateLimiterService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -9,12 +10,16 @@ import static org.mockito.Mockito.*;
 class PaymentResponseListenerTest {
 
     private PaymentRepository paymentRepository;
+    private RateLimiterService rateLimiter;
     private PaymentResponseListener listener;
 
     @BeforeEach
+    @SuppressWarnings("unchecked")
     void setUp() {
         paymentRepository = mock(PaymentRepository.class);
-        listener = new PaymentResponseListener(paymentRepository);
+        rateLimiter = mock(RateLimiterService.class);
+
+        listener = new PaymentResponseListener(paymentRepository, rateLimiter);
     }
 
     @Test

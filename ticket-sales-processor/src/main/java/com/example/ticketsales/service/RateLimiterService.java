@@ -1,0 +1,43 @@
+package com.example.ticketsales.service;
+
+import io.github.bucket4j.Bucket;
+import io.github.bucket4j.BucketConfiguration;
+import io.github.bucket4j.distributed.proxy.ProxyManager;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+
+@Service
+@RequiredArgsConstructor
+public class RateLimiterService {
+
+    private final ProxyManager<String> proxyManager;
+    private final BucketConfiguration concurrencyConfiguration;
+    private final BucketConfiguration rateConfiguration;
+
+    private static final String CONCURRENCY_KEY = "payment-concurrency-bucket";
+    private static final String RATE_KEY = "payment-rate-bucket";
+
+    public Bucket getConcurrencyBucket() {
+        return proxyManager.builder().build(CONCURRENCY_KEY, concurrencyConfiguration);
+    }
+
+    public Bucket getRateBucket() {
+        return proxyManager.builder().build(RATE_KEY, rateConfiguration);
+    }
+
+    public long acquireConcurrencyTokens(int count) {
+        return getConcurrencyBucket().tryConsumeAsMuchAsPossible(count);
+    }
+
+    public void releaseConcurrencyTokens(long count) {
+        if (count > 0) getConcurrencyBucket().addTokens(count);
+    }
+
+    public long acquireRateTokens(long count) {
+        return getRateBucket().tryConsumeAsMuchAsPossible(count);
+    }
+
+    public void releaseRateTokens(long count) {
+        if (count > 0) getRateBucket().addTokens(count);
+    }
+}

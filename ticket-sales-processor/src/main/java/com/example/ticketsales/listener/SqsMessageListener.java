@@ -4,15 +4,17 @@ import com.example.ticketsales.model.Payment;
 import com.example.ticketsales.model.PaymentRequest;
 import com.example.ticketsales.model.TicketSaleMessage;
 import com.example.ticketsales.repository.PaymentRepository;
+import com.example.ticketsales.service.RateLimiterService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
@@ -30,7 +32,11 @@ public class SqsMessageListener {
     private final SqsClient sqsClient;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final PaymentRepository paymentRepository;
+    private final RateLimiterService rateLimiter;
+    private final AsyncTaskExecutor taskExecutor;
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    private String cachedQueueUrl;
 
     @Value("${aws.sqs.queue-name}")
     private String queueName;
@@ -38,27 +44,95 @@ public class SqsMessageListener {
     @Value("${kafka.topics.payment-request}")
     private String paymentRequestTopic;
 
-    @Scheduled(fixedDelay = 2000)
-    public void poll() {
-        try {
-            String queueUrl = sqsClient.getQueueUrl(r -> r.queueName(queueName)).queueUrl();
-            List<Message> messages = sqsClient.receiveMessage(
-                    ReceiveMessageRequest.builder().queueUrl(queueUrl).maxNumberOfMessages(10).build()
-            ).messages();
+    @PostConstruct
+    public void init() {
+        // Start a few high-capacity long-polling workers to neutralize SQS latency.
+        for (int i = 0; i < 5; i++) {
+            taskExecutor.execute(this::continuousPoll);
+        }
+    }
 
-            for (Message msg : messages) {
+    public void continuousPoll() {
+        log.info("Starting continuous optimized SQS polling loop...");
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                // 1. Try to get a batch of concurrency slots (up to 10)
+                long concurrencyAcquired = rateLimiter.acquireConcurrencyTokens(10);
+                if (concurrencyAcquired <= 0) {
+                    Thread.sleep(50);
+                    continue;
+                }
+
+                // 2. Try to get rate tokens (TPS) matching the secured concurrency
+                long rateAcquired = rateLimiter.acquireRateTokens(concurrencyAcquired);
+
+                // Return excess concurrency tokens if TPS limit is reached
+                if (rateAcquired < concurrencyAcquired) {
+                    rateLimiter.releaseConcurrencyTokens(concurrencyAcquired - rateAcquired);
+                }
+
+                if (rateAcquired <= 0) {
+                    Thread.sleep(50);
+                    continue;
+                }
+
+                // 3. Sync Long Polling for the secured batch size
+                String queueUrl = getQueueUrl();
+                List<Message> messages = sqsClient.receiveMessage(
+                        ReceiveMessageRequest.builder()
+                                .queueUrl(queueUrl)
+                                .maxNumberOfMessages((int) rateAcquired)
+                                .waitTimeSeconds(20)
+                                .build()
+                ).messages();
+
+                // 4. Handle results and return unused tokens
+                if (messages.isEmpty()) {
+                    rateLimiter.releaseConcurrencyTokens(rateAcquired);
+                    rateLimiter.releaseRateTokens(rateAcquired);
+                    continue;
+                }
+
+                if (messages.size() < rateAcquired) {
+                    long unused = rateAcquired - messages.size();
+                    rateLimiter.releaseConcurrencyTokens(unused);
+                    rateLimiter.releaseRateTokens(unused);
+                }
+
+                for (Message msg : messages) {
+                    taskExecutor.execute(() -> {
+                        try {
+                            process(msg.body());
+                        } catch (Exception e) {
+                            log.error("Failed to process message: {}", msg.body(), e);
+                            rateLimiter.releaseConcurrencyTokens(1);
+                        } finally {
+                            sqsClient.deleteMessage(DeleteMessageRequest.builder()
+                                    .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
+                        }
+                    });
+                }
+
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                log.error("Error in continuous polling loop", e);
                 try {
-                    process(msg.body());
-                } catch (Exception e) {
-                    log.error("Failed to process message: {}", msg.body(), e);
-                } finally {
-                    sqsClient.deleteMessage(DeleteMessageRequest.builder()
-                            .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
+                    Thread.sleep(1000);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
                 }
             }
-        } catch (Exception e) {
-            log.error("Error polling SQS: {}", e.getMessage());
         }
+    }
+
+    private String getQueueUrl() {
+        if (cachedQueueUrl == null) {
+            cachedQueueUrl = sqsClient.getQueueUrl(r -> r.queueName(queueName)).queueUrl();
+        }
+        return cachedQueueUrl;
     }
 
     private void process(String body) throws Exception {
