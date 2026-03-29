@@ -26,7 +26,8 @@ spring:
       batch-size: 16384
       properties:
         linger.ms: 5
-        compression.type: snappy
+        # Changed from snappy to lz4 to avoid UnsatisfiedLinkError on Alpine Linux
+        compression.type: lz4
 
 kafka:
   topics:
