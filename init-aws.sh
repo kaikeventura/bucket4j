@@ -5,7 +5,7 @@ REGION=us-east-1
 AWS="aws --endpoint-url=$ENDPOINT --region=$REGION"
 
 echo "==> Creating SQS queue..."
-$AWS sqs create-queue --queue-name ticket-sales-queue || echo "Queue already exists, skipping."
+$AWS sqs create-queue --queue-name ticket-sales-queue --attributes VisibilityTimeout=120 || echo "Queue already exists, skipping."
 
 echo "==> Creating DynamoDB table..."
 $AWS dynamodb create-table \

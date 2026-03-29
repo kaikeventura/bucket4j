@@ -47,8 +47,8 @@ public class SqsMessageListener {
     @PostConstruct
     public void init() {
         // Start workers for long-polling
-        // Increased number of workers to 20 to ensure we're never waiting for a polling slot
-        for (int i = 0; i < 20; i++) {
+        // Reduced workers to 5 to avoid over-fetching while maintaining enough parallelism
+        for (int i = 0; i < 5; i++) {
             taskExecutor.execute(this::continuousPoll);
         }
     }
@@ -57,8 +57,9 @@ public class SqsMessageListener {
         log.info("Starting SQS polling loop...");
         while (!Thread.currentThread().isInterrupted()) {
             try {
-                // 1. Acquire up to 10 concurrency slots first to guard SQS fetch
-                long acquiredConcurrency = rateLimiter.acquireConcurrencyTokens(10);
+                // 1. Acquire 1 concurrency slot first to guard SQS fetch
+                // Only fetching 1 message at a time to keep flow strictly linear and avoid local buffering
+                long acquiredConcurrency = rateLimiter.acquireConcurrencyTokens(1);
                 if (acquiredConcurrency <= 0) {
                     log.debug("No concurrency tokens available, backing off...");
                     Thread.sleep(100);
@@ -69,19 +70,15 @@ public class SqsMessageListener {
                 List<Message> messages = sqsClient.receiveMessage(
                         ReceiveMessageRequest.builder()
                                 .queueUrl(queueUrl)
-                                .maxNumberOfMessages((int) acquiredConcurrency)
+                                .maxNumberOfMessages(1)
                                 .waitTimeSeconds(20)
                                 .build()
                 ).messages();
 
-                // 2. Return unused concurrency slots if SQS returned fewer messages
-                if (messages.size() < acquiredConcurrency) {
-                    long unused = acquiredConcurrency - messages.size();
-                    log.debug("Returning {} unused concurrency tokens", unused);
-                    rateLimiter.releaseConcurrencyTokens(unused);
-                }
-
+                // 2. Return unused concurrency slot if SQS returned no message
                 if (messages.isEmpty()) {
+                    log.debug("Returning unused concurrency token");
+                    rateLimiter.releaseConcurrencyTokens(1);
                     continue;
                 }
 
