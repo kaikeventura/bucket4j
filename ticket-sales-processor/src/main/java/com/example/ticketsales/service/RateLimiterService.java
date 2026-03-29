@@ -29,6 +29,10 @@ public class RateLimiterService {
         return getConcurrencyBucket().tryConsumeAsMuchAsPossible(count);
     }
 
+    public void consumeConcurrencyTokenBlocking() throws InterruptedException {
+        getConcurrencyBucket().asBlocking().consume(1);
+    }
+
     public void releaseConcurrencyTokens(long count) {
         if (count > 0) getConcurrencyBucket().addTokens(count);
     }

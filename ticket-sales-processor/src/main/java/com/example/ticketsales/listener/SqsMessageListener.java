@@ -57,14 +57,9 @@ public class SqsMessageListener {
         log.info("Starting SQS polling loop...");
         while (!Thread.currentThread().isInterrupted()) {
             try {
-                // 1. Acquire 1 concurrency slot first to guard SQS fetch
+                // 1. Acquire 1 concurrency slot first to guard SQS fetch (blocking to maintain pressure)
                 // Only fetching 1 message at a time to keep flow strictly linear and avoid local buffering
-                long acquiredConcurrency = rateLimiter.acquireConcurrencyTokens(1);
-                if (acquiredConcurrency <= 0) {
-                    log.debug("No concurrency tokens available, backing off...");
-                    Thread.sleep(100);
-                    continue;
-                }
+                rateLimiter.consumeConcurrencyTokenBlocking();
 
                 String queueUrl = getQueueUrl();
                 List<Message> messages = sqsClient.receiveMessage(
