@@ -29,7 +29,7 @@ kafka:
     payment-response: payment-response
 
 ratelimit:
-  tps: 50
+  tps: 10
   concurrency: 100
 
 otel:
