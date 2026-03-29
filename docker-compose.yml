@@ -59,11 +59,11 @@ services:
       replicas: 3
       resources:
         limits:
-          cpus: "1.00"
-          memory: 512M
+          cpus: "1.50"
+          memory: 1024M
         reservations:
-          cpus: "0.25"
-          memory: 256M
+          cpus: "0.50"
+          memory: 512M
 
   payment-processor-fake:
     build: ./payment-processor-fake
@@ -81,11 +81,11 @@ services:
       replicas: 3
       resources:
         limits:
-          cpus: "0.10"
-          memory: 16M
+          cpus: "0.50"
+          memory: 64M
         reservations:
-          cpus: "0.05"
-          memory: 8M
+          cpus: "0.25"
+          memory: 32M
 
   load-tester:
     build: ./load-tester
