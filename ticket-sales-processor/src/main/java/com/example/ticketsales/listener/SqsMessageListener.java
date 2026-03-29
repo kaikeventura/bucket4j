@@ -56,32 +56,48 @@ public class SqsMessageListener {
         log.info("Starting SQS polling loop...");
         while (!Thread.currentThread().isInterrupted()) {
             try {
+                // 1. Acquire up to 10 concurrency slots first to guard SQS fetch
+                long acquiredConcurrency = rateLimiter.acquireConcurrencyTokens(10);
+                if (acquiredConcurrency <= 0) {
+                    log.debug("No concurrency tokens available, backing off...");
+                    Thread.sleep(100); // Backoff if no concurrency available
+                    continue;
+                }
+
                 String queueUrl = getQueueUrl();
                 List<Message> messages = sqsClient.receiveMessage(
                         ReceiveMessageRequest.builder()
                                 .queueUrl(queueUrl)
-                                .maxNumberOfMessages(10)
+                                .maxNumberOfMessages((int) acquiredConcurrency)
                                 .waitTimeSeconds(20)
                                 .build()
                 ).messages();
 
+                // 2. Return unused concurrency slots if SQS returned fewer messages
+                if (messages.size() < acquiredConcurrency) {
+                    long unused = acquiredConcurrency - messages.size();
+                    log.debug("Returning {} unused concurrency tokens", unused);
+                    rateLimiter.releaseConcurrencyTokens(unused);
+                }
+
+                if (messages.isEmpty()) {
+                    continue;
+                }
+
                 for (Message msg : messages) {
                     taskExecutor.execute(() -> {
                         try {
-                            // First, acquire rate token to respect TPS limit
+                            // 3. Acquire rate token (linear TPS) immediately before processing
                             rateLimiter.consumeRateTokenBlocking();
-                            // Second, acquire concurrency token to respect in-flight limit
-                            rateLimiter.consumeConcurrencyTokenBlocking();
 
                             process(msg.body());
                         } catch (InterruptedException e) {
                             log.warn("Processing interrupted for message: {}", msg.messageId());
                             Thread.currentThread().interrupt();
+                            rateLimiter.releaseConcurrencyTokens(1);
                         } catch (Exception e) {
                             log.error("Failed to process message: {}", msg.body(), e);
-                            // Concurrency token should be released on failure (if it was acquired)
-                            // Note: If rateLimiter.consumeRateTokenBlocking succeeds but consumeConcurrencyTokenBlocking fails (e.g., interrupted),
-                            // we don't need to release. If process(msg.body()) fails, concurrency token is released there.
+                            // Token already released in process() if it fails
                         } finally {
                             sqsClient.deleteMessage(DeleteMessageRequest.builder()
                                     .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
@@ -89,6 +105,9 @@ public class SqsMessageListener {
                     });
                 }
 
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
             } catch (Exception e) {
                 log.error("Error in polling loop", e);
                 try {

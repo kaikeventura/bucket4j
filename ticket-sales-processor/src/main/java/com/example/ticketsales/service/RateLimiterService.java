@@ -25,8 +25,8 @@ public class RateLimiterService {
         return proxyManager.builder().build(RATE_KEY, rateConfiguration);
     }
 
-    public void consumeConcurrencyTokenBlocking() throws InterruptedException {
-        getConcurrencyBucket().asBlocking().consume(1);
+    public long acquireConcurrencyTokens(int count) {
+        return getConcurrencyBucket().tryConsumeAsMuchAsPossible(count);
     }
 
     public void releaseConcurrencyTokens(long count) {
