@@ -58,11 +58,10 @@ public class SqsMessageListener {
         while (!Thread.currentThread().isInterrupted()) {
             try {
                 // 1. Acquire up to 10 concurrency slots first to guard SQS fetch
-                // We use a larger chunk to minimize Redis round-trips
                 long acquiredConcurrency = rateLimiter.acquireConcurrencyTokens(10);
                 if (acquiredConcurrency <= 0) {
                     log.debug("No concurrency tokens available, backing off...");
-                    Thread.sleep(100); // Backoff if no concurrency available
+                    Thread.sleep(100);
                     continue;
                 }
 
@@ -88,19 +87,25 @@ public class SqsMessageListener {
 
                 for (Message msg : messages) {
                     taskExecutor.execute(() -> {
+                        boolean shouldReleaseConcurrency = true;
                         try {
                             // 3. Acquire rate token (linear TPS) immediately before processing
                             rateLimiter.consumeRateTokenBlocking();
 
-                            process(msg.body());
+                            // process() returns true if the message was successfully sent to Kafka
+                            if (process(msg.body())) {
+                                shouldReleaseConcurrency = false;
+                            }
                         } catch (InterruptedException e) {
                             log.warn("Processing interrupted for message: {}", msg.messageId());
                             Thread.currentThread().interrupt();
-                            rateLimiter.releaseConcurrencyTokens(1);
                         } catch (Exception e) {
                             log.error("Failed to process message: {}", msg.body(), e);
-                            // Token already released in process() if it fails
                         } finally {
+                            if (shouldReleaseConcurrency) {
+                                rateLimiter.releaseConcurrencyTokens(1);
+                                log.debug("Concurrency token released due to failure or interruption");
+                            }
                             sqsClient.deleteMessage(DeleteMessageRequest.builder()
                                     .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
                         }
@@ -129,9 +134,10 @@ public class SqsMessageListener {
         return cachedQueueUrl;
     }
 
-    private void process(String body) throws Exception {
+    private boolean process(String body) throws Exception {
         long start = System.nanoTime();
         String status = "SUCCESS";
+        boolean sentToKafka = false;
 
         try {
             TicketSaleMessage ticketMsg = objectMapper.readValue(body, TicketSaleMessage.class);
@@ -144,6 +150,7 @@ public class SqsMessageListener {
             request.setUserId(ticketMsg.getUserId());
 
             kafkaTemplate.send(paymentRequestTopic, objectMapper.writeValueAsString(request));
+            sentToKafka = true;
             log.info("Published PaymentRequest to Kafka: {}", request);
 
             Payment payment = new Payment();
@@ -155,10 +162,15 @@ public class SqsMessageListener {
             payment.setTimestamp(Instant.now().toString());
             paymentRepository.save(payment);
             log.info("Saved PENDING payment for ticketId={}", ticketMsg.getTicketId());
+            return true;
         } catch (Exception e) {
             status = "FAILED";
-            // Important: Release concurrency token if processing failed BEFORE it could be released by PaymentResponseListener
-            rateLimiter.releaseConcurrencyTokens(1);
+            // If we failed BEFORE sending to Kafka, we must signal the caller to release the token.
+            // If we failed AFTER sending to Kafka (e.g. repo save error), the token will be released by PaymentResponseListener.
+            if (sentToKafka) {
+                log.warn("Kafka send succeeded but processing failed afterwards. Token will be released by async response listener.");
+                return true;
+            }
             throw e;
         } finally {
             double durationSeconds = (System.nanoTime() - start) / 1e9;
