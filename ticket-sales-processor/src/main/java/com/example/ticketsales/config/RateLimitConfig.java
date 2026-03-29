@@ -55,14 +55,16 @@ public class RateLimitConfig {
 
     @Bean
     public BucketConfiguration concurrencyConfiguration() {
-        // Safety refill: 1 token every 2 seconds to recover from leaks without bloating limit
+        // Concurrency bucket doesn't need refill, tokens are manually released.
+        // We use a very slow safety refill just in case of leaks.
         return BucketConfiguration.builder()
-                .addLimit(Bandwidth.classic(concurrencyLimit, Refill.greedy(1, Duration.ofSeconds(2))))
+                .addLimit(Bandwidth.classic(concurrencyLimit, Refill.greedy(1, Duration.ofMinutes(1))))
                 .build();
     }
 
     @Bean
     public BucketConfiguration rateConfiguration() {
+        // For linear TPS, we use greedy refill matching the TPS limit.
         return BucketConfiguration.builder()
                 .addLimit(Bandwidth.classic(tpsLimit, Refill.greedy(tpsLimit, Duration.ofSeconds(1))))
                 .build();
