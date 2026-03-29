@@ -47,7 +47,8 @@ public class SqsMessageListener {
     @PostConstruct
     public void init() {
         // Start workers for long-polling
-        for (int i = 0; i < 5; i++) {
+        // Increased number of workers to 20 to ensure we're never waiting for a polling slot
+        for (int i = 0; i < 20; i++) {
             taskExecutor.execute(this::continuousPoll);
         }
     }
@@ -57,6 +58,7 @@ public class SqsMessageListener {
         while (!Thread.currentThread().isInterrupted()) {
             try {
                 // 1. Acquire up to 10 concurrency slots first to guard SQS fetch
+                // We use a larger chunk to minimize Redis round-trips
                 long acquiredConcurrency = rateLimiter.acquireConcurrencyTokens(10);
                 if (acquiredConcurrency <= 0) {
                     log.debug("No concurrency tokens available, backing off...");

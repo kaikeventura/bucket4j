@@ -22,6 +22,11 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: 1
+      batch-size: 16384
+      properties:
+        linger.ms: 5
+        compression.type: snappy
 
 kafka:
   topics:
