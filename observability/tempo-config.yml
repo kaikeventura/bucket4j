@@ -11,8 +11,12 @@ distributor:
 
 ingester:
   trace_idle_period: 10s
-  max_block_bytes: 1_000_000
+  max_block_bytes: 100_000_000
   max_block_duration: 5m
+
+overrides:
+  ingestion_rate_limit_bytes: 50_000_000
+  ingestion_burst_size_bytes: 100_000_000
 
 compactor:
   compaction:
