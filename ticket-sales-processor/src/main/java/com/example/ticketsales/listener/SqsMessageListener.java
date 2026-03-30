@@ -47,8 +47,8 @@ public class SqsMessageListener {
     @PostConstruct
     public void init() {
         // Start workers for long-polling
-        // Reduced workers to 5 to avoid over-fetching while maintaining enough parallelism
-        for (int i = 0; i < 5; i++) {
+        // Increased workers to 20 to ensure we have enough parallel polls to keep the pipe full
+        for (int i = 0; i < 20; i++) {
             taskExecutor.execute(this::continuousPoll);
         }
     }
@@ -57,23 +57,31 @@ public class SqsMessageListener {
         log.info("Starting SQS polling loop...");
         while (!Thread.currentThread().isInterrupted()) {
             try {
-                // 1. Acquire 1 concurrency slot first to guard SQS fetch (blocking to maintain pressure)
-                // Only fetching 1 message at a time to keep flow strictly linear and avoid local buffering
-                rateLimiter.consumeConcurrencyTokenBlocking();
+                // 1. Acquire up to 10 concurrency slots to guard SQS fetch
+                // This prevents fetching more messages than we can track 'in-flight'
+                long acquiredConcurrency = rateLimiter.acquireConcurrencyTokens(10);
+                if (acquiredConcurrency <= 0) {
+                    log.debug("No concurrency tokens available, backing off...");
+                    Thread.sleep(100);
+                    continue;
+                }
 
                 String queueUrl = getQueueUrl();
                 List<Message> messages = sqsClient.receiveMessage(
                         ReceiveMessageRequest.builder()
                                 .queueUrl(queueUrl)
-                                .maxNumberOfMessages(1)
+                                .maxNumberOfMessages((int) acquiredConcurrency)
                                 .waitTimeSeconds(20)
                                 .build()
                 ).messages();
 
-                // 2. Return unused concurrency slot if SQS returned no message
+                // 2. Return unused concurrency slots if SQS returned fewer messages than acquired
+                if (messages.size() < acquiredConcurrency) {
+                    long unused = acquiredConcurrency - messages.size();
+                    rateLimiter.releaseConcurrencyTokens(unused);
+                }
+
                 if (messages.isEmpty()) {
-                    log.debug("Returning unused concurrency token");
-                    rateLimiter.releaseConcurrencyTokens(1);
                     continue;
                 }
 
@@ -81,7 +89,8 @@ public class SqsMessageListener {
                     taskExecutor.execute(() -> {
                         boolean shouldReleaseConcurrency = true;
                         try {
-                            // 3. Acquire rate token (linear TPS) immediately before processing
+                            // 3. Acquire rate token (linear TPS) immediately before processing.
+                            // This ensures that even with batch fetching, the execution is strictly limited to 10 TPS.
                             rateLimiter.consumeRateTokenBlocking();
 
                             // process() returns true if the message was successfully sent to Kafka
