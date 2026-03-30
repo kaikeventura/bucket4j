@@ -33,7 +33,7 @@ public class RateLimitConfig {
     @Value("${ratelimit.tps:50}")
     private int tpsLimit;
 
-    @Value("${ratelimit.concurrency:50}")
+    @Value("${ratelimit.concurrency:500}")
     private int concurrencyLimit;
 
     @Bean
@@ -55,19 +55,20 @@ public class RateLimitConfig {
 
     @Bean
     public BucketConfiguration concurrencyConfiguration() {
-        // Concurrency bucket with a very slow safety refill (1 token every 5 seconds).
-        // This ensures the limit is strictly enforced while allowing recovery from rare token leaks.
-        // Fast refills essentially turn the concurrency limit into another rate limit.
+        // Concurrency bucket with an extremely slow safety refill (1 token every 10 seconds).
+        // This ensures the limit is strictly enforced (requiring response-based releases)
+        // while allowing very slow recovery from potential token leaks.
         return BucketConfiguration.builder()
-                .addLimit(Bandwidth.classic(concurrencyLimit, Refill.greedy(1, Duration.ofSeconds(5))))
+                .addLimit(Bandwidth.classic(concurrencyLimit, Refill.greedy(1, Duration.ofSeconds(10))))
                 .build();
     }
 
     @Bean
     public BucketConfiguration rateConfiguration() {
-        // For linear TPS, we use greedy refill matching the TPS limit.
+        // CRITICAL: For perfectly linear TPS, we set the burst capacity to 1.
+        // This prevents 'clumping' or bursts, forcing a steady 100ms interval between tokens.
         return BucketConfiguration.builder()
-                .addLimit(Bandwidth.classic(tpsLimit, Refill.greedy(tpsLimit, Duration.ofSeconds(1))))
+                .addLimit(Bandwidth.classic(1, Refill.greedy(tpsLimit, Duration.ofSeconds(1))))
                 .build();
     }
 
