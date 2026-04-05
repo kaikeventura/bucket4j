@@ -46,67 +46,67 @@ public class SqsMessageListener {
 
     @PostConstruct
     public void init() {
-        // Start a few high-capacity long-polling workers to neutralize SQS latency.
-        for (int i = 0; i < 5; i++) {
+        // Start workers for long-polling
+        // Increased workers to 20 to ensure we have enough parallel polls to keep the pipe full
+        for (int i = 0; i < 20; i++) {
             taskExecutor.execute(this::continuousPoll);
         }
     }
 
     public void continuousPoll() {
-        log.info("Starting continuous optimized SQS polling loop...");
+        log.info("Starting SQS polling loop...");
         while (!Thread.currentThread().isInterrupted()) {
             try {
-                // 1. Try to get a batch of concurrency slots (up to 10)
-                long concurrencyAcquired = rateLimiter.acquireConcurrencyTokens(10);
-                if (concurrencyAcquired <= 0) {
-                    Thread.sleep(50);
+                // 1. Acquire up to 10 concurrency slots to guard SQS fetch
+                // This prevents fetching more messages than we can track 'in-flight'
+                long acquiredConcurrency = rateLimiter.acquireConcurrencyTokens(10);
+                if (acquiredConcurrency <= 0) {
+                    log.debug("No concurrency tokens available, backing off...");
+                    Thread.sleep(100);
                     continue;
                 }
 
-                // 2. Try to get rate tokens (TPS) matching the secured concurrency
-                long rateAcquired = rateLimiter.acquireRateTokens(concurrencyAcquired);
-
-                // Return excess concurrency tokens if TPS limit is reached
-                if (rateAcquired < concurrencyAcquired) {
-                    rateLimiter.releaseConcurrencyTokens(concurrencyAcquired - rateAcquired);
-                }
-
-                if (rateAcquired <= 0) {
-                    Thread.sleep(50);
-                    continue;
-                }
-
-                // 3. Sync Long Polling for the secured batch size
                 String queueUrl = getQueueUrl();
                 List<Message> messages = sqsClient.receiveMessage(
                         ReceiveMessageRequest.builder()
                                 .queueUrl(queueUrl)
-                                .maxNumberOfMessages((int) rateAcquired)
+                                .maxNumberOfMessages((int) acquiredConcurrency)
                                 .waitTimeSeconds(20)
                                 .build()
                 ).messages();
 
-                // 4. Handle results and return unused tokens
-                if (messages.isEmpty()) {
-                    rateLimiter.releaseConcurrencyTokens(rateAcquired);
-                    rateLimiter.releaseRateTokens(rateAcquired);
-                    continue;
+                // 2. Return unused concurrency slots if SQS returned fewer messages than acquired
+                if (messages.size() < acquiredConcurrency) {
+                    long unused = acquiredConcurrency - messages.size();
+                    rateLimiter.releaseConcurrencyTokens(unused);
                 }
 
-                if (messages.size() < rateAcquired) {
-                    long unused = rateAcquired - messages.size();
-                    rateLimiter.releaseConcurrencyTokens(unused);
-                    rateLimiter.releaseRateTokens(unused);
+                if (messages.isEmpty()) {
+                    continue;
                 }
 
                 for (Message msg : messages) {
                     taskExecutor.execute(() -> {
+                        boolean shouldReleaseConcurrency = true;
                         try {
-                            process(msg.body());
+                            // 3. Acquire rate token (linear TPS) immediately before processing.
+                            // This ensures that even with batch fetching, the execution is strictly limited to 10 TPS.
+                            rateLimiter.consumeRateTokenBlocking();
+
+                            // process() returns true if the message was successfully sent to Kafka
+                            if (process(msg.body())) {
+                                shouldReleaseConcurrency = false;
+                            }
+                        } catch (InterruptedException e) {
+                            log.warn("Processing interrupted for message: {}", msg.messageId());
+                            Thread.currentThread().interrupt();
                         } catch (Exception e) {
                             log.error("Failed to process message: {}", msg.body(), e);
-                            rateLimiter.releaseConcurrencyTokens(1);
                         } finally {
+                            if (shouldReleaseConcurrency) {
+                                rateLimiter.releaseConcurrencyTokens(1);
+                                log.debug("Concurrency token released due to failure or interruption");
+                            }
                             sqsClient.deleteMessage(DeleteMessageRequest.builder()
                                     .queueUrl(queueUrl).receiptHandle(msg.receiptHandle()).build());
                         }
@@ -117,7 +117,7 @@ public class SqsMessageListener {
                 Thread.currentThread().interrupt();
                 break;
             } catch (Exception e) {
-                log.error("Error in continuous polling loop", e);
+                log.error("Error in polling loop", e);
                 try {
                     Thread.sleep(1000);
                 } catch (InterruptedException ie) {
@@ -135,9 +135,10 @@ public class SqsMessageListener {
         return cachedQueueUrl;
     }
 
-    private void process(String body) throws Exception {
+    private boolean process(String body) throws Exception {
         long start = System.nanoTime();
         String status = "SUCCESS";
+        boolean sentToKafka = false;
 
         try {
             TicketSaleMessage ticketMsg = objectMapper.readValue(body, TicketSaleMessage.class);
@@ -150,6 +151,7 @@ public class SqsMessageListener {
             request.setUserId(ticketMsg.getUserId());
 
             kafkaTemplate.send(paymentRequestTopic, objectMapper.writeValueAsString(request));
+            sentToKafka = true;
             log.info("Published PaymentRequest to Kafka: {}", request);
 
             Payment payment = new Payment();
@@ -161,8 +163,15 @@ public class SqsMessageListener {
             payment.setTimestamp(Instant.now().toString());
             paymentRepository.save(payment);
             log.info("Saved PENDING payment for ticketId={}", ticketMsg.getTicketId());
+            return true;
         } catch (Exception e) {
             status = "FAILED";
+            // If we failed BEFORE sending to Kafka, we must signal the caller to release the token.
+            // If we failed AFTER sending to Kafka (e.g. repo save error), the token will be released by PaymentResponseListener.
+            if (sentToKafka) {
+                log.warn("Kafka send succeeded but processing failed afterwards. Token will be released by async response listener.");
+                return true;
+            }
             throw e;
         } finally {
             double durationSeconds = (System.nanoTime() - start) / 1e9;
