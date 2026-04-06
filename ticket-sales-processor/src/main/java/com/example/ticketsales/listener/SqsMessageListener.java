@@ -10,6 +10,7 @@ import io.awspring.cloud.sqs.annotation.SqsListener;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.metrics.Meter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -31,8 +32,16 @@ public class SqsMessageListener {
     @Value("${kafka.topics.payment-request}")
     private String paymentRequestTopic;
 
+    private final Meter meter = GlobalOpenTelemetry.getMeter("com.example.ticketsales");
+
     @SqsListener(value = "${aws.sqs.queue-name}", maxMessagesPerPoll = "10")
     public void process(String messageBody) throws Exception {
+        // Incrementa o contador de recebimento IMEDIATAMENTE ao sair do SQS
+        meter.counterBuilder("tickets.received")
+                .setDescription("Total tickets received from SQS")
+                .build()
+                .add(1);
+
         // 1. Bloqueio inteligente: Se não houver token, a Virtual Thread "estaciona"
         // até que o Refill.greedy libere o próximo (ex: daqui a 100ms).
         rateLimiter.consumeRateTokenBlocking();
@@ -66,20 +75,18 @@ public class SqsMessageListener {
         } catch (Exception e) {
             status = "FAILED";
             log.error("Failed to process message: {}", messageBody, e);
-            // 3. Em caso de erro técnico na API externa (ou processamento),
-            // NÃO capturar a exceção para que ela sofra o Visibility Timeout do SQS.
             throw e;
         } finally {
             double durationSeconds = (System.nanoTime() - start) / 1e9;
-            Attributes attrs = Attributes.of(
-                    AttributeKey.stringKey("status"), status
-            );
-            GlobalOpenTelemetry.getMeter("com.example.ticketsales").counterBuilder("tickets.processed")
-                    .setDescription("Total number of tickets processed")
+            Attributes attrs = Attributes.of(AttributeKey.stringKey("status"), status);
+
+            meter.counterBuilder("tickets.processed")
+                    .setDescription("Total tickets sent to Kafka")
                     .setUnit("1")
                     .build()
                     .add(1, attrs);
-            GlobalOpenTelemetry.getMeter("com.example.ticketsales").histogramBuilder("processing.duration")
+
+            meter.histogramBuilder("processing.duration")
                     .setDescription("Histogram of processing duration")
                     .setUnit("s")
                     .build()

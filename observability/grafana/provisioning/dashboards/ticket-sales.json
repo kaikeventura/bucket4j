@@ -3,7 +3,7 @@
   "title": "Bucket4j — Payment Pipeline",
   "tags": ["bucket4j", "payments"],
   "schemaVersion": 38,
-  "version": 4,
+  "version": 5,
   "refresh": "5s",
   "time": { "from": "now-15m", "to": "now" },
   "templating": {
@@ -23,22 +23,26 @@
   "panels": [
     {
       "id": 10,
-      "title": "Current Throughput (Real-time TPS)",
+      "title": "Live Pipeline Status (TPS)",
       "type": "stat",
       "gridPos": { "x": 0, "y": 0, "w": 24, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
+          "expr": "sum(rate(bucket4j_tickets_received_total{service_name=\"ticket-sales-processor\"}[1m]))",
+          "legendFormat": "Java In (from SQS)"
+        },
+        {
           "expr": "sum(rate(bucket4j_tickets_processed_total{service_name=\"ticket-sales-processor\"}[1m]))",
-          "legendFormat": "Java Outbound (to Kafka)"
+          "legendFormat": "Java Out (to Kafka)"
         },
         {
           "expr": "sum(rate(bucket4j_tickets_received_total{service_name=\"payment-processor-fake\"}[1m]))",
-          "legendFormat": "Go Inbound (from Kafka)"
+          "legendFormat": "Go In (from Kafka)"
         },
         {
           "expr": "sum(rate(bucket4j_tickets_processed_total{service_name=\"payment-processor-fake\"}[1m]))",
-          "legendFormat": "Go Outbound (Completed)"
+          "legendFormat": "Go Out (Finished)"
         }
       ],
       "options": {
@@ -65,22 +69,22 @@
     },
     {
       "id": 1,
-      "title": "Pipeline Flow — Detailed Throughput (TPS)",
+      "title": "Detailed Pipeline Throughput (TPS)",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 4, "w": 24, "h": 10 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "sum(rate(bucket4j_tickets_processed_total{service_name=\"ticket-sales-processor\"}[1m]))",
-          "legendFormat": "1. Java Outbound (Sent to Kafka)"
+          "legendFormat": "1. Java Sent to Kafka"
         },
         {
           "expr": "sum(rate(bucket4j_tickets_received_total{service_name=\"payment-processor-fake\"}[1m]))",
-          "legendFormat": "2. Go Inbound (Received by Fake)"
+          "legendFormat": "2. Go Received from Kafka"
         },
         {
           "expr": "sum(rate(bucket4j_tickets_processed_total{service_name=\"payment-processor-fake\"}[1m]))",
-          "legendFormat": "3. Go Outbound (Finished Processing)"
+          "legendFormat": "3. Go Finished Processing"
         }
       ],
       "fieldConfig": {
@@ -91,7 +95,7 @@
             "mode": "absolute",
             "steps": [
               { "color": "transparent", "value": null },
-              { "color": "red", "value": 10 }
+              { "color": "red", "value": 10.1 }
             ]
           }
         }
@@ -102,14 +106,14 @@
     },
     {
       "id": 2,
-      "title": "Bucket4j Rate Limit Wait Time (s) — Java App",
+      "title": "Bucket4j Global Wait Time (p95 s)",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 14, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum by (le) (rate(bucket4j_bucket4j_wait_time_bucket[1m])))",
-          "legendFormat": "Wait Time p95 (Java)"
+          "legendFormat": "Java Wait Time p95"
         }
       ],
       "fieldConfig": {
@@ -118,7 +122,7 @@
     },
     {
       "id": 7,
-      "title": "Processing Latency (p95 s) — Java vs Go",
+      "title": "Service Processing Latency (p95 s)",
       "type": "timeseries",
       "gridPos": { "x": 12, "y": 14, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -134,7 +138,7 @@
     },
     {
       "id": 5,
-      "title": "Logs",
+      "title": "Pipeline Logs",
       "type": "logs",
       "gridPos": { "x": 0, "y": 22, "w": 24, "h": 10 },
       "datasource": { "type": "loki", "uid": "loki" },
