@@ -34,11 +34,9 @@ spring:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
       acks: 1
-      # batch-size and linger.ms set to minimum to reduce latency and stabilize TPS
-      batch-size: 0
+      batch-size: 16384
       properties:
-        linger.ms: 0
-        max.in.flight.requests.per.connection: 1
+        linger.ms: 5
         # Changed from snappy to lz4 to avoid UnsatisfiedLinkError on Alpine Linux
         compression.type: lz4
 

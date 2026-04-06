@@ -83,22 +83,23 @@ func main() {
 	responseTopic := getEnv("RESPONSE_TOPIC", "payment-response")
 
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  []string{broker},
-		Topic:    requestTopic,
-		GroupID:  "payment-processor-group",
-		MinBytes: 1,
-		MaxBytes: 10e6,
+		Brokers:        []string{broker},
+		Topic:          requestTopic,
+		GroupID:        "payment-processor-group",
+		MinBytes:       1,
+		MaxBytes:       10e6,
+		CommitInterval: 100 * time.Millisecond, // Commits assíncronos para alta vazão
 	})
 	defer reader.Close()
 
 	writer := kafka.NewWriter(kafka.WriterConfig{
 		Brokers:      []string{broker},
 		Topic:        responseTopic,
-		BatchTimeout: 5 * time.Millisecond,
+		BatchTimeout: 10 * time.Millisecond,
 	})
 	defer writer.Close()
 
-	emitLog(logger, otellog.SeverityInfo, fmt.Sprintf("Consuming from topic: %s with concurrent workers", requestTopic))
+	emitLog(logger, otellog.SeverityInfo, fmt.Sprintf("Consuming from topic: %s with parallel workers", requestTopic))
 
 	const numWorkers = 15
 	var wg sync.WaitGroup
@@ -108,9 +109,10 @@ func main() {
 		go func(workerID int) {
 			defer wg.Done()
 			for {
-				msg, err := reader.FetchMessage(ctx)
+				msg, err := reader.ReadMessage(ctx)
 				if err != nil {
-					return
+					emitLog(logger, otellog.SeverityError, fmt.Sprintf("worker %d read error: %v", workerID, err))
+					continue
 				}
 
 				receivedCounter.Add(ctx, 1)
@@ -129,6 +131,7 @@ func main() {
 					statusVal = resp.Status
 					respJSON, _ := json.Marshal(resp)
 					if err := writer.WriteMessages(spanCtx, kafka.Message{Value: respJSON}); err != nil {
+						emitLog(logger, otellog.SeverityError, fmt.Sprintf("worker %d publish error: %v", workerID, err))
 						span.SetStatus(codes.Error, err.Error())
 						statusVal = "FAILED"
 					} else {
@@ -136,7 +139,6 @@ func main() {
 					}
 				}
 
-				reader.CommitMessages(ctx, msg)
 				counter.Add(ctx, 1, metric.WithAttributes(attribute.String("status", statusVal)))
 				histogram.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(attribute.String("status", statusVal)))
 				span.End()

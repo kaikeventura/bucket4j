@@ -54,10 +54,10 @@ public class RateLimitConfig {
     public BucketConfiguration rateConfiguration() {
         // Algoritmo: Refill.greedy(10, Duration.ofSeconds(1))
         // O greedy distribui a liberação de tokens matematicamente (1 token a cada 100ms).
-        // Capacidade 1 força um intervalo estrito de 100ms entre as mensagens,
-        // evitando rajadas que possam saturar os buffers do Kafka.
+        // Capacidade 10 permite compensar micro-pausas no polling do SQS e RTT do Redis,
+        // garantindo que a vazão média de 10 TPS seja atingida sem oscilações negativas.
         return BucketConfiguration.builder()
-                .addLimit(Bandwidth.classic(1, Refill.greedy(tpsLimit, Duration.ofSeconds(1))))
+                .addLimit(Bandwidth.classic(tpsLimit, Refill.greedy(tpsLimit, Duration.ofSeconds(1))))
                 .build();
     }
 
