@@ -9,6 +9,17 @@ aws:
 spring:
   application:
     name: ticket-sales-processor
+  cloud:
+    aws:
+      sqs:
+        endpoint: ${AWS_ENDPOINT:http://localhost:4566}
+        region:
+          static: ${AWS_REGION:us-east-1}
+      credentials:
+        access-key: test
+        secret-key: test
+      region:
+        static: ${AWS_REGION:us-east-1}
   threads:
     virtual:
       enabled: true
@@ -36,7 +47,6 @@ kafka:
 
 ratelimit:
   tps: 10
-  concurrency: 100
 
 otel:
   exporter:
