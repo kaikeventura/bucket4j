@@ -67,10 +67,13 @@ func main() {
 	meter := otel.Meter("payment-processor-fake")
 	logger := global.Logger("payment-processor-fake")
 
-	counter, _ := meter.Int64Counter("bucket4j.tickets.processed",
+	counter, _ := meter.Int64Counter("tickets.processed",
 		metric.WithDescription("Total payments processed by fake processor"),
 	)
-	histogram, _ := meter.Float64Histogram("bucket4j.processing.duration",
+	receivedCounter, _ := meter.Int64Counter("tickets.received",
+		metric.WithDescription("Total payments received by fake processor"),
+	)
+	histogram, _ := meter.Float64Histogram("processing.duration",
 		metric.WithDescription("Payment processing duration"),
 		metric.WithUnit("s"),
 	)
@@ -102,6 +105,8 @@ func main() {
 			emitLog(logger, otellog.SeverityError, fmt.Sprintf("read error: %v", err))
 			continue
 		}
+
+		receivedCounter.Add(ctx, 1)
 
 		ctx, span := tracer.Start(ctx, "kafka.process_payment")
 		start := time.Now()

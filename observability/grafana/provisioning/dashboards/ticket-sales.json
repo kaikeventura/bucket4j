@@ -3,16 +3,16 @@
   "title": "Bucket4j — Payment Pipeline",
   "tags": ["bucket4j", "payments"],
   "schemaVersion": 38,
-  "version": 1,
-  "refresh": "10s",
-  "time": { "from": "now-30m", "to": "now" },
+  "version": 2,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
   "templating": {
     "list": [
       {
         "name": "service",
         "type": "query",
         "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "query": "label_values(bucket4j_bucket4j_tickets_processed_total, service_name)",
+        "query": "label_values(bucket4j_tickets_processed_total, service_name)",
         "refresh": 2,
         "includeAll": true,
         "allValue": ".+",
@@ -23,14 +23,34 @@
   "panels": [
     {
       "id": 1,
-      "title": "Tickets Processed — Rate (req/s)",
+      "title": "Global Throughput (TPS) — Processed",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "sum by (service_name, status) (rate(bucket4j_bucket4j_tickets_processed_total[1m]))",
-          "legendFormat": "{{service_name}} — {{status}}"
+          "expr": "sum by (service_name) (rate(bucket4j_tickets_processed_total[1m]))",
+          "legendFormat": "{{service_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "drawStyle": "line" } }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Payment Processor Fake — Received vs Processed",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(bucket4j_tickets_received_total{service_name=\"payment-processor-fake\"}[1m]))",
+          "legendFormat": "Received (TPS)"
+        },
+        {
+          "expr": "sum(rate(bucket4j_tickets_processed_total{service_name=\"payment-processor-fake\"}[1m]))",
+          "legendFormat": "Processed (TPS)"
         }
       ],
       "fieldConfig": {
@@ -39,22 +59,14 @@
     },
     {
       "id": 2,
-      "title": "Processing Duration — p50 / p95 / p99 (s)",
+      "title": "Bucket4j Wait Time — Java App (s)",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le, service_name) (rate(bucket4j_bucket4j_processing_duration_seconds_bucket[1m])))",
-          "legendFormat": "p50 {{service_name}}"
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum by (le, service_name) (rate(bucket4j_bucket4j_processing_duration_seconds_bucket[1m])))",
-          "legendFormat": "p95 {{service_name}}"
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum by (le, service_name) (rate(bucket4j_bucket4j_processing_duration_seconds_bucket[1m])))",
-          "legendFormat": "p99 {{service_name}}"
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(bucket4j_bucket4j_wait_time_bucket[1m])))",
+          "legendFormat": "Wait Time p95"
         }
       ],
       "fieldConfig": {
@@ -65,11 +77,11 @@
       "id": 3,
       "title": "Error Rate (%)",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "100 * sum by (service_name) (rate(bucket4j_bucket4j_tickets_processed_total{status=\"FAILED\"}[1m])) / sum by (service_name) (rate(bucket4j_bucket4j_tickets_processed_total[1m]))",
+          "expr": "100 * sum by (service_name) (rate(bucket4j_tickets_processed_total{status=\"FAILED\"}[1m])) / sum by (service_name) (rate(bucket4j_tickets_processed_total[1m]))",
           "legendFormat": "{{service_name}}"
         }
       ],
@@ -87,20 +99,6 @@
           }
         }
       }
-    },
-    {
-      "id": 4,
-      "title": "Traces — Search",
-      "type": "traces",
-      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
-      "datasource": { "type": "tempo", "uid": "tempo" },
-      "targets": [
-        {
-          "queryType": "traceql",
-          "query": "{resource.service.name=~\"$service\"}",
-          "limit": 20
-        }
-      ]
     },
     {
       "id": 5,
