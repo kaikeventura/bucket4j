@@ -31,7 +31,7 @@ public class SqsMessageListener {
     @Value("${kafka.topics.payment-request}")
     private String paymentRequestTopic;
 
-    @SqsListener(value = "${aws.sqs.queue-name}", maxMessagesPerPoll = "1")
+    @SqsListener(value = "${aws.sqs.queue-name}", maxMessagesPerPoll = "10")
     public void process(String messageBody) throws Exception {
         // 1. Bloqueio inteligente: Se não houver token, a Virtual Thread "estaciona"
         // até que o Refill.greedy libere o próximo (ex: daqui a 100ms).
