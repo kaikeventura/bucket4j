@@ -33,9 +33,6 @@ public class RateLimitConfig {
     @Value("${ratelimit.tps:50}")
     private int tpsLimit;
 
-    @Value("${ratelimit.concurrency:500}")
-    private int concurrencyLimit;
-
     @Bean
     public RedisClient redisClient() {
         return RedisClient.create(RedisURI.builder()
@@ -54,21 +51,13 @@ public class RateLimitConfig {
     }
 
     @Bean
-    public BucketConfiguration concurrencyConfiguration() {
-        // Concurrency bucket with an extremely slow safety refill (1 token every 10 seconds).
-        // This ensures the limit is strictly enforced (requiring response-based releases)
-        // while allowing very slow recovery from potential token leaks.
-        return BucketConfiguration.builder()
-                .addLimit(Bandwidth.classic(concurrencyLimit, Refill.greedy(1, Duration.ofSeconds(10))))
-                .build();
-    }
-
-    @Bean
     public BucketConfiguration rateConfiguration() {
-        // CRITICAL: For perfectly linear TPS, we set the burst capacity to 1.
-        // This prevents 'clumping' or bursts, forcing a steady 100ms interval between tokens.
+        // Algoritmo: Refill.greedy(10, Duration.ofSeconds(1))
+        // O greedy distribui a liberação de tokens matematicamente (1 token a cada 100ms).
+        // Capacidade 10 permite compensar micro-pausas no polling do SQS e RTT do Redis,
+        // garantindo que a vazão média de 10 TPS seja atingida sem oscilações negativas.
         return BucketConfiguration.builder()
-                .addLimit(Bandwidth.classic(1, Refill.greedy(tpsLimit, Duration.ofSeconds(1))))
+                .addLimit(Bandwidth.classic(tpsLimit, Refill.greedy(tpsLimit, Duration.ofSeconds(1))))
                 .build();
     }
 

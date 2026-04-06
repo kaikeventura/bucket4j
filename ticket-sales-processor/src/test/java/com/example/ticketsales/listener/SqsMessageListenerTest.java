@@ -6,11 +6,11 @@ import com.example.ticketsales.service.RateLimiterService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.core.task.SyncTaskExecutor;
 import org.springframework.kafka.core.KafkaTemplate;
-import software.amazon.awssdk.services.sqs.SqsClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 class SqsMessageListenerTest {
@@ -28,24 +28,22 @@ class SqsMessageListenerTest {
         rateLimiter = mock(RateLimiterService.class);
 
         listener = new SqsMessageListener(
-            mock(SqsClient.class),
             kafkaTemplate,
             paymentRepository,
-            rateLimiter,
-            mock(org.springframework.core.task.AsyncTaskExecutor.class)
+            rateLimiter
         );
         setField(listener, "paymentRequestTopic", "payment-request");
-        setField(listener, "queueName", "ticket-sales-queue");
     }
 
     @Test
-    void process_publishesToKafkaAndSavesPendingPayment() throws Exception {
+    void process_consumesTokenPublishesToKafkaAndSavesPendingPayment() throws Exception {
         String body = """
                 {"ticketId":"T1","amount":99.9,"currency":"USD","userId":"U1"}
                 """;
 
-        invokePrivateProcess(listener, body);
+        listener.process(body);
 
+        verify(rateLimiter).consumeRateTokenBlocking();
         verify(kafkaTemplate).send(eq("payment-request"), contains("T1"));
 
         ArgumentCaptor<Payment> captor = ArgumentCaptor.forClass(Payment.class);
@@ -61,17 +59,6 @@ class SqsMessageListenerTest {
             field.set(target, value);
         } catch (Exception e) {
             throw new RuntimeException(e);
-        }
-    }
-
-    private void invokePrivateProcess(SqsMessageListener target, String body) throws Exception {
-        try {
-            var method = target.getClass().getDeclaredMethod("process", String.class);
-            method.setAccessible(true);
-            method.invoke(target, body);
-        } catch (Exception e) {
-            if (e.getCause() instanceof Exception) throw (Exception) e.getCause();
-            throw e;
         }
     }
 }

@@ -3,16 +3,16 @@
   "title": "Bucket4j — Payment Pipeline",
   "tags": ["bucket4j", "payments"],
   "schemaVersion": 38,
-  "version": 1,
-  "refresh": "10s",
-  "time": { "from": "now-30m", "to": "now" },
+  "version": 5,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
   "templating": {
     "list": [
       {
         "name": "service",
         "type": "query",
         "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "query": "label_values(bucket4j_bucket4j_tickets_processed_total, service_name)",
+        "query": "label_values(bucket4j_tickets_processed_total, service_name)",
         "refresh": 2,
         "includeAll": true,
         "allValue": ".+",
@@ -22,39 +22,98 @@
   },
   "panels": [
     {
-      "id": 1,
-      "title": "Tickets Processed — Rate (req/s)",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "id": 10,
+      "title": "Live Pipeline Status (TPS)",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "sum by (service_name, status) (rate(bucket4j_bucket4j_tickets_processed_total[1m]))",
-          "legendFormat": "{{service_name}} — {{status}}"
+          "expr": "sum(rate(bucket4j_tickets_received_total{service_name=\"ticket-sales-processor\"}[1m]))",
+          "legendFormat": "Java In (from SQS)"
+        },
+        {
+          "expr": "sum(rate(bucket4j_tickets_processed_total{service_name=\"ticket-sales-processor\"}[1m]))",
+          "legendFormat": "Java Out (to Kafka)"
+        },
+        {
+          "expr": "sum(rate(bucket4j_tickets_received_total{service_name=\"payment-processor-fake\"}[1m]))",
+          "legendFormat": "Go In (from Kafka)"
+        },
+        {
+          "expr": "sum(rate(bucket4j_tickets_processed_total{service_name=\"payment-processor-fake\"}[1m]))",
+          "legendFormat": "Go Out (Finished)"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 8.5 },
+              { "color": "red", "value": 11 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 1,
+      "title": "Detailed Pipeline Throughput (TPS)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(bucket4j_tickets_processed_total{service_name=\"ticket-sales-processor\"}[1m]))",
+          "legendFormat": "1. Java Sent to Kafka"
+        },
+        {
+          "expr": "sum(rate(bucket4j_tickets_received_total{service_name=\"payment-processor-fake\"}[1m]))",
+          "legendFormat": "2. Go Received from Kafka"
+        },
+        {
+          "expr": "sum(rate(bucket4j_tickets_processed_total{service_name=\"payment-processor-fake\"}[1m]))",
+          "legendFormat": "3. Go Finished Processing"
         }
       ],
       "fieldConfig": {
-        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2 } }
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2, "drawStyle": "line", "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "transparent", "value": null },
+              { "color": "red", "value": 10.1 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull", "max"] }
       }
     },
     {
       "id": 2,
-      "title": "Processing Duration — p50 / p95 / p99 (s)",
+      "title": "Bucket4j Global Wait Time (p95 s)",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 14, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le, service_name) (rate(bucket4j_bucket4j_processing_duration_seconds_bucket[1m])))",
-          "legendFormat": "p50 {{service_name}}"
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum by (le, service_name) (rate(bucket4j_bucket4j_processing_duration_seconds_bucket[1m])))",
-          "legendFormat": "p95 {{service_name}}"
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum by (le, service_name) (rate(bucket4j_bucket4j_processing_duration_seconds_bucket[1m])))",
-          "legendFormat": "p99 {{service_name}}"
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(bucket4j_bucket4j_wait_time_bucket[1m])))",
+          "legendFormat": "Java Wait Time p95"
         }
       ],
       "fieldConfig": {
@@ -62,51 +121,26 @@
       }
     },
     {
-      "id": 3,
-      "title": "Error Rate (%)",
+      "id": 7,
+      "title": "Service Processing Latency (p95 s)",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "gridPos": { "x": 12, "y": 14, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "100 * sum by (service_name) (rate(bucket4j_bucket4j_tickets_processed_total{status=\"FAILED\"}[1m])) / sum by (service_name) (rate(bucket4j_bucket4j_tickets_processed_total[1m]))",
-          "legendFormat": "{{service_name}}"
+          "expr": "histogram_quantile(0.95, sum by (le, service_name) (rate(bucket4j_processing_duration_bucket[1m])))",
+          "legendFormat": "p95 {{service_name}}"
         }
       ],
       "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "custom": { "lineWidth": 2 },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 5 },
-              { "color": "red", "value": 20 }
-            ]
-          }
-        }
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2 } }
       }
     },
     {
-      "id": 4,
-      "title": "Traces — Search",
-      "type": "traces",
-      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
-      "datasource": { "type": "tempo", "uid": "tempo" },
-      "targets": [
-        {
-          "queryType": "traceql",
-          "query": "{resource.service.name=~\"$service\"}",
-          "limit": 20
-        }
-      ]
-    },
-    {
       "id": 5,
-      "title": "Logs",
+      "title": "Pipeline Logs",
       "type": "logs",
-      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 10 },
+      "gridPos": { "x": 0, "y": 22, "w": 24, "h": 10 },
       "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {

@@ -104,6 +104,7 @@ services:
     image: redis:7.2-alpine
     ports:
       - "6379:6379"
+    command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

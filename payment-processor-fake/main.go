@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -34,7 +35,6 @@ func simulatePayment(req PaymentRequest) PaymentResponse {
 	}
 }
 
-// simple helper to emit structured log to OTel
 func emitLog(logger otellog.Logger, severity otellog.Severity, body string, attrs ...otellog.KeyValue) {
 	ctx := context.Background()
 	r := otellog.Record{}
@@ -67,10 +67,13 @@ func main() {
 	meter := otel.Meter("payment-processor-fake")
 	logger := global.Logger("payment-processor-fake")
 
-	counter, _ := meter.Int64Counter("bucket4j.tickets.processed",
+	counter, _ := meter.Int64Counter("tickets.processed",
 		metric.WithDescription("Total payments processed by fake processor"),
 	)
-	histogram, _ := meter.Float64Histogram("bucket4j.processing.duration",
+	receivedCounter, _ := meter.Int64Counter("tickets.received",
+		metric.WithDescription("Total payments received by fake processor"),
+	)
+	histogram, _ := meter.Float64Histogram("processing.duration",
 		metric.WithDescription("Payment processing duration"),
 		metric.WithUnit("s"),
 	)
@@ -80,13 +83,15 @@ func main() {
 	responseTopic := getEnv("RESPONSE_TOPIC", "payment-response")
 
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: []string{broker},
-		Topic:   requestTopic,
-		GroupID: "payment-processor-group",
+		Brokers:        []string{broker},
+		Topic:          requestTopic,
+		GroupID:        "payment-processor-group",
+		MinBytes:       1,
+		MaxBytes:       10e6,
+		CommitInterval: 100 * time.Millisecond, // Commits assíncronos para alta vazão
 	})
 	defer reader.Close()
 
-	// Configura o writer com BatchTimeout menor para evitar latência de 1s
 	writer := kafka.NewWriter(kafka.WriterConfig{
 		Brokers:      []string{broker},
 		Topic:        responseTopic,
@@ -94,55 +99,52 @@ func main() {
 	})
 	defer writer.Close()
 
-	emitLog(logger, otellog.SeverityInfo, fmt.Sprintf("Consuming from topic: %s", requestTopic))
+	emitLog(logger, otellog.SeverityInfo, fmt.Sprintf("Consuming from topic: %s with parallel workers", requestTopic))
 
-	for {
-		msg, err := reader.ReadMessage(ctx)
-		if err != nil {
-			emitLog(logger, otellog.SeverityError, fmt.Sprintf("read error: %v", err))
-			continue
-		}
+	const numWorkers = 15
+	var wg sync.WaitGroup
+	wg.Add(numWorkers)
 
-		ctx, span := tracer.Start(ctx, "kafka.process_payment")
-		start := time.Now()
-		statusVal := "SUCCESS"
+	for i := 0; i < numWorkers; i++ {
+		go func(workerID int) {
+			defer wg.Done()
+			for {
+				msg, err := reader.ReadMessage(ctx)
+				if err != nil {
+					emitLog(logger, otellog.SeverityError, fmt.Sprintf("worker %d read error: %v", workerID, err))
+					continue
+				}
 
-		var req PaymentRequest
-		if err := json.Unmarshal(msg.Value, &req); err != nil {
-			emitLog(logger, otellog.SeverityError, fmt.Sprintf("parse error: %v — value: %s", err, string(msg.Value)))
-			span.SetStatus(codes.Error, err.Error())
-			span.RecordError(err)
-			statusVal = "FAILED"
-		} else {
-			span.SetAttributes(
-				attribute.String("ticket.id", req.TicketId),
-				attribute.Float64("ticket.amount", req.Amount),
-			)
+				receivedCounter.Add(ctx, 1)
 
-			resp := simulatePayment(req)
-			statusVal = resp.Status
+				spanCtx, span := tracer.Start(ctx, "kafka.process_payment")
+				start := time.Now()
+				statusVal := "SUCCESS"
 
-			// Log processing result with attributes
-			emitLog(logger, otellog.SeverityInfo,
-				fmt.Sprintf("Processed ticketId=%s → status=%s txn=%s", resp.TicketId, resp.Status, resp.TransactionId),
-				otellog.String("ticket_id", resp.TicketId),
-				otellog.String("status", resp.Status),
-				otellog.String("txn_id", resp.TransactionId),
-			)
+				var req PaymentRequest
+				if err := json.Unmarshal(msg.Value, &req); err != nil {
+					span.SetStatus(codes.Error, err.Error())
+					statusVal = "FAILED"
+				} else {
+					span.SetAttributes(attribute.String("ticket.id", req.TicketId))
+					resp := simulatePayment(req)
+					statusVal = resp.Status
+					respJSON, _ := json.Marshal(resp)
+					if err := writer.WriteMessages(spanCtx, kafka.Message{Value: respJSON}); err != nil {
+						emitLog(logger, otellog.SeverityError, fmt.Sprintf("worker %d publish error: %v", workerID, err))
+						span.SetStatus(codes.Error, err.Error())
+						statusVal = "FAILED"
+					} else {
+						span.SetStatus(codes.Ok, "")
+					}
+				}
 
-			respJSON, _ := json.Marshal(resp)
-			if err := writer.WriteMessages(ctx, kafka.Message{Value: respJSON}); err != nil {
-				emitLog(logger, otellog.SeverityError, fmt.Sprintf("publish error: %v", err))
-				span.SetStatus(codes.Error, err.Error())
-				span.RecordError(err)
-				statusVal = "FAILED"
-			} else {
-				span.SetStatus(codes.Ok, "")
+				counter.Add(ctx, 1, metric.WithAttributes(attribute.String("status", statusVal)))
+				histogram.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(attribute.String("status", statusVal)))
+				span.End()
 			}
-		}
-
-		counter.Add(ctx, 1, metric.WithAttributes(attribute.String("status", statusVal)))
-		histogram.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(attribute.String("status", statusVal)))
-		span.End()
+		}(i)
 	}
+
+	wg.Wait()
 }
