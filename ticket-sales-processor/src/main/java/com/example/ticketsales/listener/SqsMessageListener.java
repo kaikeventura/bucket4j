@@ -72,17 +72,16 @@ public class SqsMessageListener {
         } finally {
             double durationSeconds = (System.nanoTime() - start) / 1e9;
             Attributes attrs = Attributes.of(
-                    AttributeKey.stringKey("service_name"), "ticket-sales-processor",
                     AttributeKey.stringKey("status"), status
             );
-            GlobalOpenTelemetry.getMeter("com.example.ticketsales").counterBuilder("tickets_processed_total")
+            GlobalOpenTelemetry.getMeter("com.example.ticketsales").counterBuilder("tickets.processed")
                     .setDescription("Total number of tickets processed")
                     .setUnit("1")
                     .build()
                     .add(1, attrs);
-            GlobalOpenTelemetry.getMeter("com.example.ticketsales").histogramBuilder("processing_duration_seconds")
+            GlobalOpenTelemetry.getMeter("com.example.ticketsales").histogramBuilder("processing.duration")
                     .setDescription("Histogram of processing duration")
-                    .setUnit("seconds")
+                    .setUnit("s")
                     .build()
                     .record(durationSeconds, attrs);
         }
