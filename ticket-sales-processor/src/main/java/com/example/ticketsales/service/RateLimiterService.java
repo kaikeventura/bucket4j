@@ -8,6 +8,7 @@ import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.DoubleHistogram;
 import io.opentelemetry.api.metrics.Meter;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -17,6 +18,7 @@ public class RateLimiterService {
 
     private final ProxyManager<String> proxyManager;
     private final BucketConfiguration rateConfiguration;
+    private Bucket rateBucket;
 
     private static final String RATE_KEY = "payment-rate-bucket";
 
@@ -26,13 +28,14 @@ public class RateLimiterService {
             .setUnit("s")
             .build();
 
-    public Bucket getRateBucket() {
-        return proxyManager.builder().build(RATE_KEY, rateConfiguration);
+    @PostConstruct
+    public void init() {
+        this.rateBucket = proxyManager.builder().build(RATE_KEY, rateConfiguration);
     }
 
     public void consumeRateTokenBlocking() throws InterruptedException {
         long start = System.nanoTime();
-        getRateBucket().asBlocking().consume(1);
+        rateBucket.asBlocking().consume(1);
         double durationSeconds = (System.nanoTime() - start) / 1e9;
 
         waitTimeHistogram.record(durationSeconds, Attributes.of(AttributeKey.stringKey("bucket"), RATE_KEY));

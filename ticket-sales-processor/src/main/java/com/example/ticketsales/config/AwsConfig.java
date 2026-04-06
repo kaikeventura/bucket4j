@@ -53,7 +53,7 @@ public class AwsConfig {
         return SqsMessageListenerContainerFactory
                 .builder()
                 .configure(options -> options
-                        .maxConcurrentMessages(10)
+                        .maxConcurrentMessages(20)
                         .pollTimeout(java.time.Duration.ofSeconds(20)))
                 .sqsAsyncClient(sqsAsyncClient)
                 .build();
